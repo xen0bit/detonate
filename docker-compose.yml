@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  detonate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: detonate-api
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - isolated
+    tmpfs:
+      - /tmp:noexec,nosuid,size=512m
+      - /dev/shm:noexec,nosuid,size=256m
+    volumes:
+      # Windows DLLs (user-provided)
+      - ./dlls/x86:/opt/rootfs/x86_windows/dlls:ro
+      - ./dlls/x86_64:/opt/rootfs/x8664_windows/dlls:ro
+      # Sample input
+      - ./samples:/samples:ro
+      # Output directory
+      - ./output:/output:rw
+      # Database persistence
+      - ./data/db:/var/lib/detonate:rw
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - DETONATE_DATABASE=/var/lib/detonate/detonate.db
+      - DETONATE_ROOTFS=/app/data/rootfs
+      - DETONATE_DLLS_X86=/opt/rootfs/x86_windows/dlls
+      - DETONATE_DLLS_X64=/opt/rootfs/x8664_windows/dlls
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+          pids: 100
+        reservations:
+          cpus: '1'
+          memory: 1G
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://127.0.0.1:8000/api/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  isolated:
+    internal: true
+    driver: bridge

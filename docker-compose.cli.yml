@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  detonate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: detonate-cli
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - none
+    tmpfs:
+      - /tmp:noexec,nosuid,size=512m
+    volumes:
+      - ./dlls/x86:/opt/rootfs/x86_windows/dlls:ro
+      - ./dlls/x86_64:/opt/rootfs/x8664_windows/dlls:ro
+      - ./samples:/samples:ro
+      - ./output:/output:rw
+    environment:
+      - DETONATE_ROOTFS=/app/data/rootfs
+      - DETONATE_DLLS_X86=/opt/rootfs/x86_windows/dlls
+      - DETONATE_DLLS_X64=/opt/rootfs/x8664_windows/dlls
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+          pids: 100
+    network_mode: none
