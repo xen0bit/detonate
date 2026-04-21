@@ -156,39 +156,106 @@ class DetonateEmulator:
         # Import qiling here to avoid import errors if not installed
         try:
             from qiling import Qiling
+            from qiling.const import QL_ARCH, QL_OS
         except ImportError:
             raise RuntimeError("Qiling not installed. Run: pip install qiling")
 
-        # Determine Qiling arch string
+        # Map platform/arch to Qiling enums
         arch_map = {
-            "x86": "x86",
-            "x86_64": "x8664",
-            "arm": "arm",
-            "arm64": "arm64",
+            "x86": QL_ARCH.X86,
+            "x86_64": QL_ARCH.X8664,
+            "arm": QL_ARCH.ARM,
+            "arm64": QL_ARCH.ARM64,
         }
-        ql_arch = arch_map.get(self.architecture, "x86")
+        os_map = {
+            "windows": QL_OS.WINDOWS,
+            "linux": QL_OS.LINUX,
+        }
 
-        # Determine OS profile
-        if self.platform == "windows":
-            profile = "windows"
-        else:
-            profile = "linux"
+        ql_arch = arch_map.get(self.architecture)
+        ql_os = os_map.get(self.platform)
 
-        # Initialize Qiling
-        ql = Qiling(
-            argv=[str(self.sample_path)],
+        if ql_arch is None:
+            raise ValueError(f"Unsupported architecture: {self.architecture}")
+        if ql_os is None:
+            raise ValueError(f"Unsupported platform: {self.platform}")
+
+        # Validate that the sample binary matches the detected architecture
+        # Mismatched architecture causes silent emulation failures in Qiling
+        self._validate_binary_architecture()
+
+        # Log configuration for debugging
+        log.debug(
+            "qiling_config",
+            archtype=str(ql_arch),
+            ostype=str(ql_os),
             rootfs=str(self.rootfs_path),
-            archname=ql_arch,
-            ostype=profile,
-            console=False,
+            sample=str(self.sample_path),
         )
 
-        # Set up hooks based on platform
+        # Initialize Qiling with proper error handling
+        try:
+            ql = Qiling(
+                argv=[str(self.sample_path)],
+                rootfs=str(self.rootfs_path),
+                archtype=ql_arch,
+                ostype=ql_os,
+                console=False,
+            )
+        except FileNotFoundError as e:
+            # Missing rootfs files (e.g., ld-linux, libc)
+            raise RuntimeError(
+                f"Qiling initialization failed: missing rootfs files. "
+                f"Ensure {self.rootfs_path} contains required libraries. "
+                f"Original error: {e}"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(
+                f"Qiling initialization failed for {self.sample_path} "
+                f"(arch={self.architecture}, platform={self.platform}): {e}"
+            ) from e
+
+        # Setup hooks before running
         self._setup_hooks(ql)
 
-        # Run emulation (blocking, so run in executor)
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, ql.run)
+        # Run emulation in a thread to allow async timeout to work
+        # ql.run() is blocking, so we must run it in a thread pool
+        try:
+            await asyncio.to_thread(ql.run)
+        except Exception as e:
+            log.error(
+                "emulation_runtime_error",
+                session_id=self.session.session_id if self.session else None,
+                error=str(e),
+            )
+            raise
+
+    def _validate_binary_architecture(self) -> None:
+        """
+        Validate that the sample binary matches the detected architecture.
+
+        Mismatched architecture causes silent emulation failures in Qiling.
+        """
+        if not self.sample_path.exists():
+            return
+
+        detected_platform, detected_arch = detect_platform_arch(self.sample_path)
+
+        # Check architecture match
+        if detected_arch != "unknown" and detected_arch != self.architecture:
+            raise ValueError(
+                f"Architecture mismatch: sample is {detected_arch} but "
+                f"emulation configured for {self.architecture}. "
+                f"Sample: {self.sample_path}"
+            )
+
+        # Check platform match
+        if detected_platform != "unknown" and detected_platform != self.platform:
+            raise ValueError(
+                f"Platform mismatch: sample is {detected_platform} but "
+                f"emulation configured for {self.platform}. "
+                f"Sample: {self.sample_path}"
+            )
 
     def _setup_hooks(self, ql: Any) -> None:
         """Configure Qiling hooks based on platform."""

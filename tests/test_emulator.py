@@ -478,7 +478,8 @@ class TestHookInstallation:
 
         asyncio.run(emulator.run())
 
-        assert mock_ql.hook_intno.called
+        # Verify that set_syscall was called (new API using ql.os.set_syscall)
+        assert mock_ql.os.set_syscall.called
 
 
 class TestAnalysisResult:

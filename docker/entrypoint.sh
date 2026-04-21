@@ -103,9 +103,11 @@ init_database() {
     fi
     
     # Run database initialization if database doesn't exist
+    # The detonate db init command uses DETONATE_DATABASE env var, not command line args
     if [[ ! -f "${DATABASE_PATH}" ]]; then
         log_info "Database does not exist, running initialization"
-        detonate db init --database "${DATABASE_PATH}" || {
+        export DETONATE_DATABASE="${DATABASE_PATH}"
+        detonate db init || {
             log_error "Database initialization failed"
             exit 1
         }
@@ -152,6 +154,11 @@ main() {
     init_database
     
     # Determine command to run
+    # If first arg is "detonate", strip it (for compatibility with CLI usage)
+    if [[ "${1}" == "detonate" ]]; then
+        shift
+    fi
+    
     local cmd="${1:-serve}"
     shift || true
     
@@ -175,10 +182,10 @@ main() {
             done
             ;;
         
-        analyze|list|show|export)
-            # CLI commands - pass database explicitly if applicable
+        analyze|list-analyses|show|export)
+            # CLI commands - use DETONATE_DATABASE env var (commands read from settings)
+            export DETONATE_DATABASE="${DATABASE_PATH}"
             args+=("${cmd}")
-            args+=("--database" "${DATABASE_PATH}")
             
             # Add any additional arguments from entrypoint
             while [[ $# -gt 0 ]]; do
@@ -188,9 +195,9 @@ main() {
             ;;
         
         db)
-            # Database commands - pass database explicitly
+            # Database commands - use DETONATE_DATABASE env var
+            export DETONATE_DATABASE="${DATABASE_PATH}"
             args+=("db")
-            args+=("--database" "${DATABASE_PATH}")
             
             # Add any additional arguments from entrypoint
             while [[ $# -gt 0 ]]; do

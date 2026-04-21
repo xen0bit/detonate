@@ -355,32 +355,49 @@ class TestScoreToLabel:
         assert LinuxHooks._score_to_label(0.49) == "low"
 
 
-class TestCaptureReturnValue:
-    """Tests for _capture_return_value method."""
+class TestExitHandler:
+    """Tests for EXIT handler which captures return values."""
 
-    def test_updates_pending_syscall_return(self, mock_session, mock_ql):
-        """Test that return values are captured for pending syscalls."""
+    def test_exit_handler_captures_return_value_from_rax(self, mock_session, mock_ql):
+        """Test that EXIT handler captures return values from RAX register."""
         hooks = LinuxHooks(mock_session, mock_ql)
         
-        # First record a syscall without return value
-        hooks._record_syscall("open", {"filename": "/etc/passwd"})
+        # Mock the RAX register to return a value
+        mock_ql.arch.regs.rax = 42
         
-        # Verify return value is None initially
-        assert mock_session.api_calls[0].return_value is None
+        # Call the ENTER handler for open (this creates a pending record)
+        mock_ql.arch.regs.rdi = 0x1000  # filename address
+        mock_ql.mem.string = MagicMock(return_value="/etc/passwd")
+        hooks.hook_sys_open(mock_ql)
         
-        # Capture return value - the method looks for records with None return_value
-        hooks._capture_return_value(mock_ql, LinuxHooks.SYS_OPEN, 42)
+        # Verify return value is None initially (pending)
+        assert len(mock_session.api_calls) == 1
+        record = mock_session.api_calls[0]
+        assert record.return_value is None
         
-        # Verify return value was updated (the _capture_return_value method
-        # searches for the most recent record with None return_value)
-        assert mock_session.api_calls[0].return_value == 42
+        # Simulate EXIT handler - this should capture the return value
+        exit_handler = hooks._create_exit_handler("open")
+        exit_handler(mock_ql)
         
-    def test_handles_unknown_syscall_gracefully(self, mock_session, mock_ql):
-        """Test graceful handling of unknown syscalls."""
+        # Verify return value was updated from RAX
+        assert record.return_value == 42
+        
+    def test_exit_handler_handles_exception_gracefully(self, mock_session, mock_ql):
+        """Test graceful handling when RAX read fails."""
         hooks = LinuxHooks(mock_session, mock_ql)
         
-        # Should not raise exception for unknown syscall number
-        hooks._capture_return_value(mock_ql, 9999, 0)
+        # Make RAX access raise an exception
+        type(mock_ql.arch.regs).rax = property(lambda self: (_ for _ in ()).throw(Exception("Register access failed")))
         
-        # Session should be unchanged
-        assert len(mock_session.api_calls) == 0
+        # Call the ENTER handler for open
+        mock_ql.arch.regs.rdi = 0x1000
+        mock_ql.mem.string = MagicMock(return_value="/etc/passwd")
+        hooks.hook_sys_open(mock_ql)
+        
+        # Should not raise exception
+        exit_handler = hooks._create_exit_handler("open")
+        exit_handler(mock_ql)
+        
+        # Return value should be -1 (default on failure)
+        record = mock_session.api_calls[0]
+        assert record.return_value == -1

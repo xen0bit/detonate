@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import structlog
+from qiling.const import QL_INTERCEPT
 
 from ..session import AnalysisSession, APICallRecord
 
@@ -45,6 +46,31 @@ class LinuxHooks:
     SYS_MPROTECT = 10
     SYS_MREMAP = 25
 
+    # Syscall name to number mapping for registration
+    SYSCALL_NAMES = {
+        SYS_EXECVE: "execve",
+        SYS_EXECVEAT: "execveat",
+        SYS_PTRACE: "ptrace",
+        SYS_PROCESS_VM_WRITEV: "process_vm_writev",
+        SYS_OPEN: "open",
+        SYS_OPENAT: "openat",
+        SYS_UNLINK: "unlink",
+        SYS_UNLINKAT: "unlinkat",
+        SYS_SOCKET: "socket",
+        SYS_CONNECT: "connect",
+        SYS_SENDTO: "sendto",
+        SYS_RECVFROM: "recvfrom",
+        SYS_CLONE: "clone",
+        SYS_FORK: "fork",
+        SYS_VFORK: "vfork",
+        SYS_KILL: "kill",
+        SYS_SETUID: "setuid",
+        SYS_SETGID: "setgid",
+        SYS_MMAP: "mmap",
+        SYS_MPROTECT: "mprotect",
+        SYS_MREMAP: "mremap",
+    }
+
     def __init__(self, session: AnalysisSession, ql: Any):
         """
         Initialize Linux hooks.
@@ -57,9 +83,9 @@ class LinuxHooks:
         self.ql = ql
         
         # Track pending syscalls for return value capture
-        self._pending_syscalls: dict[int, APICallRecord] = {}
+        self._pending_syscalls: dict[str, APICallRecord] = {}
 
-        # Syscall to hook mapping
+        # Syscall number to hook method mapping
         self.hooks = {
             self.SYS_EXECVE: self.hook_sys_execve,
             self.SYS_EXECVEAT: self.hook_sys_execveat,
@@ -67,6 +93,8 @@ class LinuxHooks:
             self.SYS_PROCESS_VM_WRITEV: self.hook_sys_process_vm_writev,
             self.SYS_OPEN: self.hook_sys_open,
             self.SYS_OPENAT: self.hook_sys_openat,
+            self.SYS_READ: self.hook_sys_read,
+            self.SYS_WRITE: self.hook_sys_write,
             self.SYS_UNLINK: self.hook_sys_unlink,
             self.SYS_UNLINKAT: self.hook_sys_unlinkat,
             self.SYS_SOCKET: self.hook_sys_socket,
@@ -85,53 +113,53 @@ class LinuxHooks:
         }
 
     def install(self) -> None:
-        """Install all syscall hooks with return value capture."""
+        """Install all syscall hooks using ql.os.set_syscall() with two-phase (ENTER/EXIT) architecture."""
         for syscall_num, hook_func in self.hooks.items():
             try:
-                # Install entry hook
-                self.ql.hook_intno(hook_func, syscall_num)
-                # Install exit hook to capture return value
-                self.ql.hook_syscall(self._capture_return_value, syscall_num)
+                syscall_name = self.SYSCALL_NAMES.get(syscall_num, f"syscall_{syscall_num}")
+                
+                # Install ENTER hook - captures params and creates pending record
+                self.ql.os.set_syscall(syscall_name, hook_func, QL_INTERCEPT.ENTER)
+                
+                # Install EXIT hook - captures return value and finalizes the record
+                self.ql.os.set_syscall(syscall_name, self._create_exit_handler(syscall_name), QL_INTERCEPT.EXIT)
+                
             except Exception as e:
                 log.debug("hook_install_failed", syscall=syscall_num, error=str(e))
-    
-    def _capture_return_value(self, ql: Any, syscall_num: int, return_value: int) -> None:
-        """Capture return value after syscall completes."""
-        # Find the most recent pending syscall record for this syscall number
-        # and update its return value
-        try:
-            # Get the syscall name from the number (direct mapping: num -> name)
-            syscall_name = {
-                self.SYS_EXECVE: "execve",
-                self.SYS_EXECVEAT: "execveat",
-                self.SYS_PTRACE: "ptrace",
-                self.SYS_PROCESS_VM_WRITEV: "process_vm_writev",
-                self.SYS_OPEN: "open",
-                self.SYS_OPENAT: "openat",
-                self.SYS_UNLINK: "unlink",
-                self.SYS_UNLINKAT: "unlinkat",
-                self.SYS_SOCKET: "socket",
-                self.SYS_CONNECT: "connect",
-                self.SYS_SENDTO: "sendto",
-                self.SYS_RECVFROM: "recvfrom",
-                self.SYS_CLONE: "clone",
-                self.SYS_FORK: "fork",
-                self.SYS_VFORK: "vfork",
-                self.SYS_KILL: "kill",
-                self.SYS_SETUID: "setuid",
-                self.SYS_SETGID: "setgid",
-                self.SYS_MMAP: "mmap",
-                self.SYS_MPROTECT: "mprotect",
-                self.SYS_MREMAP: "mremap",
-            }.get(syscall_num, f"syscall_{syscall_num}")
-            
-            # Find and update the most recent record for this syscall
-            for record in reversed(self.session.api_calls):
-                if record.syscall_name == syscall_name and record.return_value is None:
-                    record.return_value = return_value
-                    break
-        except Exception as e:
-            log.debug("capture_return_value_failed", syscall=syscall_num, error=str(e))
+
+    def _create_exit_handler(self, syscall_name: str):
+        """Create an EXIT handler that captures the return value and finalizes the pending record."""
+        def exit_handler(ql: Any, *args) -> None:
+            # Find the pending record for this syscall
+            if self._pending_syscalls:
+                # Get the most recent pending record for this syscall
+                for seq, (name, record) in list(self._pending_syscalls.items())[::-1]:
+                    if name == syscall_name:
+                        # Capture return value from RAX
+                        try:
+                            record.return_value = ql.arch.regs.rax
+                        except Exception:
+                            record.return_value = -1
+                        
+                        # Add technique evidence if not already added
+                        if record.technique_id is None:
+                            technique_id, technique_name, tactic, confidence = self._detect_technique(
+                                syscall_name, record.params
+                            )
+                            if technique_id != "unknown":
+                                self.session.add_technique_evidence(
+                                    technique_id=technique_id,
+                                    technique_name=technique_name,
+                                    tactic=tactic,
+                                    confidence=self._score_to_label(confidence),
+                                    confidence_score=confidence,
+                                    api_call=record,
+                                )
+                        
+                        # Remove from pending
+                        del self._pending_syscalls[seq]
+                        break
+        return exit_handler
 
     def _get_caller_address(self) -> str:
         """Get the instruction pointer of the syscall caller."""
@@ -361,8 +389,8 @@ class LinuxHooks:
             ptr_size = 8  # x86_64
             i = 0
             while True:
-                str_addr = self.ql.mem.read(addr + i * ptr_size, ptr_size)
-                str_addr = int.from_bytes(str_addr, "little")
+                str_addr_bytes = self.ql.mem.read(addr + i * ptr_size, ptr_size)
+                str_addr = int.from_bytes(str_addr_bytes, "little")
                 if str_addr == 0:
                     break
                 argv.append(self._read_string(str_addr))
@@ -371,8 +399,8 @@ class LinuxHooks:
             pass
         return argv
 
-    def hook_sys_execve(self, ql: Any) -> None:
-        """Hook execve syscall for command execution detection."""
+    def hook_sys_execve(self, ql: Any, *args) -> None:
+        """Hook execve syscall ENTER - capture params and create pending record."""
         # x86_64: rdi = filename, rsi = argv, rdx = envp
         filename_addr = ql.arch.regs.rdi
         argv_addr = ql.arch.regs.rsi
@@ -381,64 +409,46 @@ class LinuxHooks:
         argv = self._read_argv(argv_addr)
 
         params = {"filename": filename, "argv": argv}
-        record = self._record_syscall("execve", params)
+        record = self._record_syscall("execve", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("execve", params)
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("execve", record)
 
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
-
-        log.info("syscall", syscall="execve", params=params, technique_id=technique_id)
+        log.info("syscall", syscall="execve", params=params, technique_id="pending")
 
         if filename:
             self.session.add_string(filename)
 
-    def hook_sys_execveat(self, ql: Any) -> None:
-        """Hook execveat syscall for command execution detection."""
+    def hook_sys_execveat(self, ql: Any, *args) -> None:
+        """Hook execveat syscall ENTER - capture params and create pending record."""
         dirfd = ql.arch.regs.rdi
         pathname_addr = ql.arch.regs.rsi
 
         pathname = self._read_string(pathname_addr)
 
         params = {"dirfd": dirfd, "pathname": pathname}
-        record = self._record_syscall("execveat", params)
+        record = self._record_syscall("execveat", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("execveat", params)
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("execveat", record)
 
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
-
-        log.info("syscall", syscall="execveat", params=params, technique_id=technique_id)
+        log.info("syscall", syscall="execveat", params=params, technique_id="pending")
 
         if pathname:
             self.session.add_string(pathname)
 
-    def hook_sys_ptrace(self, ql: Any) -> None:
-        """Hook ptrace syscall for process injection detection."""
+    def hook_sys_ptrace(self, ql: Any, *args) -> None:
+        """Hook ptrace syscall ENTER - capture params and create pending record."""
         request = ql.arch.regs.rdi
         pid = ql.arch.regs.rsi
 
         params = {"request": request, "pid": pid}
-        record = self._record_syscall("ptrace", params)
+        record = self._record_syscall("ptrace", params, return_value=None)
 
+        # Add technique evidence immediately (known from syscall type)
         technique_id = "T1055.008"
         technique_name = "Ptrace System Calls"
         tactic = "defense-evasion"
-
         self.session.add_technique_evidence(
             technique_id=technique_id,
             technique_name=technique_name,
@@ -448,17 +458,20 @@ class LinuxHooks:
             api_call=record,
         )
 
-    def hook_sys_process_vm_writev(self, ql: Any) -> None:
-        """Hook process_vm_writev for process injection."""
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("ptrace", record)
+
+    def hook_sys_process_vm_writev(self, ql: Any, *args) -> None:
+        """Hook process_vm_writev ENTER - capture params and create pending record."""
         pid = ql.arch.regs.rdi
 
         params = {"pid": pid}
-        record = self._record_syscall("process_vm_writev", params)
+        record = self._record_syscall("process_vm_writev", params, return_value=None)
 
+        # Add technique evidence immediately
         technique_id = "T1055"
         technique_name = "Process Injection"
         tactic = "defense-evasion"
-
         self.session.add_technique_evidence(
             technique_id=technique_id,
             technique_name=technique_name,
@@ -468,66 +481,87 @@ class LinuxHooks:
             api_call=record,
         )
 
-    def hook_sys_open(self, ql: Any) -> None:
-        """Hook open syscall."""
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("process_vm_writev", record)
+
+    def hook_sys_open(self, ql: Any, *args) -> None:
+        """Hook open syscall ENTER - capture params and create pending record."""
         filename_addr = ql.arch.regs.rdi
         filename = self._read_string(filename_addr)
 
         params = {"filename": filename}
-        record = self._record_syscall("open", params)
+        record = self._record_syscall("open", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("open", params)
-
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("open", record)
 
         if filename:
             self.session.add_string(filename)
 
-    def hook_sys_openat(self, ql: Any) -> None:
-        """Hook openat syscall."""
+    def hook_sys_openat(self, ql: Any, *args) -> None:
+        """Hook openat syscall ENTER - capture params and create pending record."""
         dirfd = ql.arch.regs.rdi
         pathname_addr = ql.arch.regs.rsi
 
         pathname = self._read_string(pathname_addr)
 
         params = {"dirfd": dirfd, "pathname": pathname}
-        record = self._record_syscall("openat", params)
+        record = self._record_syscall("openat", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("openat", params)
-
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("openat", record)
 
         if pathname:
             self.session.add_string(pathname)
 
-    def hook_sys_unlink(self, ql: Any) -> None:
-        """Hook unlink syscall (file deletion)."""
+    def hook_sys_read(self, ql: Any, *args) -> None:
+        """Hook read syscall ENTER - capture params and create pending record."""
+        fd = ql.arch.regs.rdi
+        buf_addr = ql.arch.regs.rsi
+        count = ql.arch.regs.rdx
+
+        params = {"fd": fd, "buf": hex(buf_addr), "count": count}
+        record = self._record_syscall("read", params, return_value=None)
+
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("read", record)
+
+    def hook_sys_write(self, ql: Any, *args) -> None:
+        """Hook write syscall ENTER - capture params and create pending record."""
+        fd = ql.arch.regs.rdi
+        buf_addr = ql.arch.regs.rsi
+        count = ql.arch.regs.rdx
+
+        params = {"fd": fd, "buf": hex(buf_addr), "count": count}
+        record = self._record_syscall("write", params, return_value=None)
+
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("write", record)
+
+        # If writing to stdout/stderr, try to capture the output
+        if fd in (1, 2):
+            try:
+                output = ql.mem.read(buf_addr, min(count, 256))
+                try:
+                    output_str = output.decode("utf-8", errors="replace")
+                    log.info("syscall", syscall="write", fd=fd, output=output_str[:100])
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    def hook_sys_unlink(self, ql: Any, *args) -> None:
+        """Hook unlink syscall ENTER - capture params and create pending record."""
         pathname_addr = ql.arch.regs.rdi
         pathname = self._read_string(pathname_addr)
 
         params = {"pathname": pathname}
-        record = self._record_syscall("unlink", params)
+        record = self._record_syscall("unlink", params, return_value=None)
 
+        # Add technique evidence immediately
         technique_id = "T1070.004"
         technique_name = "File Deletion"
         tactic = "defense-evasion"
-
         self.session.add_technique_evidence(
             technique_id=technique_id,
             technique_name=technique_name,
@@ -537,18 +571,21 @@ class LinuxHooks:
             api_call=record,
         )
 
-    def hook_sys_unlinkat(self, ql: Any) -> None:
-        """Hook unlinkat syscall for file deletion detection."""
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("unlink", record)
+
+    def hook_sys_unlinkat(self, ql: Any, *args) -> None:
+        """Hook unlinkat syscall ENTER - capture params and create pending record."""
         pathname_addr = ql.arch.regs.rsi
         pathname = self._read_string(pathname_addr)
 
         params = {"pathname": pathname}
-        record = self._record_syscall("unlinkat", params)
+        record = self._record_syscall("unlinkat", params, return_value=None)
 
+        # Add technique evidence immediately
         technique_id = "T1070.004"
         technique_name = "File Deletion"
         tactic = "defense-evasion"
-
         self.session.add_technique_evidence(
             technique_id=technique_id,
             technique_name=technique_name,
@@ -557,180 +594,111 @@ class LinuxHooks:
             confidence_score=0.6,
             api_call=record,
         )
+
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("unlinkat", record)
 
         log.info("syscall", syscall="unlinkat", params=params, technique_id=technique_id)
 
         if pathname:
             self.session.add_string(pathname)
 
-    def hook_sys_socket(self, ql: Any) -> None:
-        """Hook socket syscall."""
+    def hook_sys_socket(self, ql: Any, *args) -> None:
+        """Hook socket syscall ENTER - capture params and create pending record."""
         domain = ql.arch.regs.rdi
         type_ = ql.arch.regs.rsi
         protocol = ql.arch.regs.rdx
 
         params = {"domain": domain, "type": type_, "protocol": protocol}
-        record = self._record_syscall("socket", params)
+        record = self._record_syscall("socket", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("socket", params)
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("socket", record)
 
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
-
-    def hook_sys_connect(self, ql: Any) -> None:
-        """Hook connect syscall."""
+    def hook_sys_connect(self, ql: Any, *args) -> None:
+        """Hook connect syscall ENTER - capture params and create pending record."""
         sockfd = ql.arch.regs.rdi
 
         params = {"sockfd": sockfd}
-        record = self._record_syscall("connect", params)
+        record = self._record_syscall("connect", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("connect", params)
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("connect", record)
 
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
-
-    def hook_sys_sendto(self, ql: Any) -> None:
-        """Hook sendto syscall."""
+    def hook_sys_sendto(self, ql: Any, *args) -> None:
+        """Hook sendto syscall ENTER - capture params and create pending record."""
         sockfd = ql.arch.regs.rdi
         length = ql.arch.regs.rdx
 
         params = {"sockfd": sockfd, "length": length}
-        record = self._record_syscall("sendto", params)
+        record = self._record_syscall("sendto", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("sendto", params)
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("sendto", record)
 
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
-
-    def hook_sys_recvfrom(self, ql: Any) -> None:
-        """Hook recvfrom syscall."""
+    def hook_sys_recvfrom(self, ql: Any, *args) -> None:
+        """Hook recvfrom syscall ENTER - capture params and create pending record."""
         sockfd = ql.arch.regs.rdi
         length = ql.arch.regs.rdx
 
         params = {"sockfd": sockfd, "length": length}
-        record = self._record_syscall("recvfrom", params)
+        record = self._record_syscall("recvfrom", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("recvfrom", params)
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("recvfrom", record)
 
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
-
-    def hook_sys_clone(self, ql: Any) -> None:
-        """Hook clone syscall."""
+    def hook_sys_clone(self, ql: Any, *args) -> None:
+        """Hook clone syscall ENTER - capture params and create pending record."""
         flags = ql.arch.regs.rdi
 
         params = {"flags": flags}
-        record = self._record_syscall("clone", params)
+        record = self._record_syscall("clone", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("clone", params)
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("clone", record)
 
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
-
-    def hook_sys_fork(self, ql: Any) -> None:
-        """Hook fork syscall for process creation detection."""
+    def hook_sys_fork(self, ql: Any, *args) -> None:
+        """Hook fork syscall ENTER - capture params and create pending record."""
         params = {}
-        record = self._record_syscall("fork", params)
+        record = self._record_syscall("fork", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("fork", params)
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("fork", record)
 
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
+        log.info("syscall", syscall="fork", params=params, technique_id="pending")
 
-        log.info("syscall", syscall="fork", params=params, technique_id=technique_id)
-
-    def hook_sys_vfork(self, ql: Any) -> None:
-        """Hook vfork syscall for process creation detection."""
+    def hook_sys_vfork(self, ql: Any, *args) -> None:
+        """Hook vfork syscall ENTER - capture params and create pending record."""
         params = {}
-        record = self._record_syscall("vfork", params)
+        record = self._record_syscall("vfork", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("vfork", params)
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("vfork", record)
 
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
+        log.info("syscall", syscall="vfork", params=params, technique_id="pending")
 
-        log.info("syscall", syscall="vfork", params=params, technique_id=technique_id)
-
-    def hook_sys_kill(self, ql: Any) -> None:
-        """Hook kill syscall."""
+    def hook_sys_kill(self, ql: Any, *args) -> None:
+        """Hook kill syscall ENTER - capture params and create pending record."""
         pid = ql.arch.regs.rdi
         sig = ql.arch.regs.rsi
 
         params = {"pid": pid, "sig": sig}
-        record = self._record_syscall("kill", params)
+        record = self._record_syscall("kill", params, return_value=None)
 
-        technique_id, technique_name, tactic, confidence = self._detect_technique("kill", params)
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("kill", record)
 
-        if technique_id != "unknown":
-            self.session.add_technique_evidence(
-                technique_id=technique_id,
-                technique_name=technique_name,
-                tactic=tactic,
-                confidence=self._score_to_label(confidence),
-                confidence_score=confidence,
-                api_call=record,
-            )
-
-    def hook_sys_setuid(self, ql: Any) -> None:
-        """Hook setuid syscall for privilege escalation detection."""
+    def hook_sys_setuid(self, ql: Any, *args) -> None:
+        """Hook setuid syscall ENTER - capture params and create pending record."""
         uid = ql.arch.regs.rdi
 
         params = {"uid": uid}
-        record = self._record_syscall("setuid", params)
+        record = self._record_syscall("setuid", params, return_value=None)
 
+        # Add technique evidence immediately
         technique_id = "T1548.001"
         technique_name = "Setuid and Setgid"
         tactic = "privilege-escalation"
-
         self.session.add_technique_evidence(
             technique_id=technique_id,
             technique_name=technique_name,
@@ -740,17 +708,20 @@ class LinuxHooks:
             api_call=record,
         )
 
-    def hook_sys_setgid(self, ql: Any) -> None:
-        """Hook setgid syscall."""
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("setuid", record)
+
+    def hook_sys_setgid(self, ql: Any, *args) -> None:
+        """Hook setgid syscall ENTER - capture params and create pending record."""
         gid = ql.arch.regs.rdi
 
         params = {"gid": gid}
-        record = self._record_syscall("setgid", params)
+        record = self._record_syscall("setgid", params, return_value=None)
 
+        # Add technique evidence immediately
         technique_id = "T1548.001"
         technique_name = "Setuid and Setgid"
         tactic = "privilege-escalation"
-
         self.session.add_technique_evidence(
             technique_id=technique_id,
             technique_name=technique_name,
@@ -760,27 +731,28 @@ class LinuxHooks:
             api_call=record,
         )
 
-    def hook_sys_mmap(self, ql: Any) -> None:
-        """Hook mmap syscall for RWX memory detection."""
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("setgid", record)
+
+    def hook_sys_mmap(self, ql: Any, *args) -> None:
+        """Hook mmap syscall ENTER - capture params and create pending record."""
         addr = ql.arch.regs.rdi
         length = ql.arch.regs.rsi
         prot = ql.arch.regs.rdx
         flags = ql.arch.regs.r10
 
         params = {"addr": hex(addr), "length": length, "prot": prot, "flags": flags}
-        record = self._record_syscall("mmap", params)
+        record = self._record_syscall("mmap", params, return_value=None)
 
-        # Check for RWX (read-write-execute)
+        # Check for RWX (read-write-execute) - detect immediately from params
         PROT_READ = 0x1
         PROT_WRITE = 0x2
         PROT_EXEC = 0x4
 
-        technique_id = None
         if (prot & PROT_READ) and (prot & PROT_WRITE) and (prot & PROT_EXEC):
             technique_id = "T1055"
             technique_name = "Process Injection"
             tactic = "defense-evasion"
-
             self.session.add_technique_evidence(
                 technique_id=technique_id,
                 technique_name=technique_name,
@@ -790,28 +762,29 @@ class LinuxHooks:
                 api_call=record,
             )
 
-        log.info("syscall", syscall="mmap", params=params, technique_id=technique_id or "unknown")
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("mmap", record)
 
-    def hook_sys_mprotect(self, ql: Any) -> None:
-        """Hook mprotect syscall for RWX memory detection."""
+        log.info("syscall", syscall="mmap", params=params, technique_id="T1055" if (prot & 0x7) == 0x7 else "pending")
+
+    def hook_sys_mprotect(self, ql: Any, *args) -> None:
+        """Hook mprotect syscall ENTER - capture params and create pending record."""
         addr = ql.arch.regs.rdi
         length = ql.arch.regs.rsi
         prot = ql.arch.regs.rdx
 
         params = {"addr": hex(addr), "length": length, "prot": prot}
-        record = self._record_syscall("mprotect", params)
+        record = self._record_syscall("mprotect", params, return_value=None)
 
-        # Check for RWX
+        # Check for RWX - detect immediately from params
         PROT_READ = 0x1
         PROT_WRITE = 0x2
         PROT_EXEC = 0x4
 
-        technique_id = None
         if (prot & PROT_READ) and (prot & PROT_WRITE) and (prot & PROT_EXEC):
             technique_id = "T1055"
             technique_name = "Process Injection"
             tactic = "defense-evasion"
-
             self.session.add_technique_evidence(
                 technique_id=technique_id,
                 technique_name=technique_name,
@@ -821,22 +794,25 @@ class LinuxHooks:
                 api_call=record,
             )
 
-        log.info("syscall", syscall="mprotect", params=params, technique_id=technique_id or "unknown")
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("mprotect", record)
 
-    def hook_sys_mremap(self, ql: Any) -> None:
-        """Hook mremap syscall for memory remapping detection."""
+        log.info("syscall", syscall="mprotect", params=params, technique_id="T1055" if (prot & 0x7) == 0x7 else "pending")
+
+    def hook_sys_mremap(self, ql: Any, *args) -> None:
+        """Hook mremap syscall ENTER - capture params and create pending record."""
         addr = ql.arch.regs.rdi
         old_len = ql.arch.regs.rsi
         new_len = ql.arch.regs.rdx
         flags = ql.arch.regs.r10
 
         params = {"addr": hex(addr), "old_len": old_len, "new_len": new_len, "flags": flags}
-        record = self._record_syscall("mremap", params)
+        record = self._record_syscall("mremap", params, return_value=None)
 
+        # Add technique evidence immediately
         technique_id = "T1055"
         technique_name = "Process Injection"
         tactic = "defense-evasion"
-
         self.session.add_technique_evidence(
             technique_id=technique_id,
             technique_name=technique_name,
@@ -845,6 +821,9 @@ class LinuxHooks:
             confidence_score=0.4,
             api_call=record,
         )
+
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("mremap", record)
 
         log.info("syscall", syscall="mremap", params=params, technique_id=technique_id)
 

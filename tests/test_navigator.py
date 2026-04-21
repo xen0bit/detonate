@@ -2,7 +2,7 @@
 
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -82,7 +82,7 @@ class TestBuildEvidenceSummary:
     def test_single_api_call(self):
         """Single API call returns just that API name."""
         record = APICallRecord(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             api_name="CreateProcessA",
             syscall_name=None,
             params={},
@@ -96,7 +96,7 @@ class TestBuildEvidenceSummary:
         """Duplicate API calls show count suffix."""
         records = [
             APICallRecord(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 api_name="CreateProcessA",
                 syscall_name=None,
                 params={},
@@ -104,7 +104,7 @@ class TestBuildEvidenceSummary:
                 address="0x1000",
             ),
             APICallRecord(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 api_name="CreateProcessA",
                 syscall_name=None,
                 params={},
@@ -112,7 +112,7 @@ class TestBuildEvidenceSummary:
                 address="0x1000",
             ),
             APICallRecord(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 api_name="CreateProcessA",
                 syscall_name=None,
                 params={},
@@ -127,7 +127,7 @@ class TestBuildEvidenceSummary:
         """Multiple unique APIs are listed."""
         records = [
             APICallRecord(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 api_name="CreateProcessA",
                 syscall_name=None,
                 params={},
@@ -135,7 +135,7 @@ class TestBuildEvidenceSummary:
                 address="0x1000",
             ),
             APICallRecord(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 api_name="VirtualAllocEx",
                 syscall_name=None,
                 params={},
@@ -151,7 +151,7 @@ class TestBuildEvidenceSummary:
         """More than 5 unique APIs are truncated with indicator."""
         records = [
             APICallRecord(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 api_name=f"API_{i}",
                 syscall_name=None,
                 params={},
@@ -168,7 +168,7 @@ class TestBuildEvidenceSummary:
     def test_uses_syscall_when_api_name_missing(self):
         """Uses syscall_name when api_name is None."""
         record = APICallRecord(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             api_name=None,
             syscall_name="execve",
             params={},
@@ -181,7 +181,7 @@ class TestBuildEvidenceSummary:
     def test_unknown_when_both_missing(self):
         """Uses 'unknown' when both api_name and syscall_name are None."""
         record = APICallRecord(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             api_name=None,
             syscall_name=None,
             params={},
@@ -263,11 +263,11 @@ class TestGenerateNavigatorLayer:
                 confidence="high",
                 confidence_score=1.0,
                 evidence_count=3,
-                first_seen=datetime.utcnow(),
-                last_seen=datetime.utcnow(),
+                first_seen=datetime.now(timezone.utc),
+                last_seen=datetime.now(timezone.utc),
                 evidence=[
                     APICallRecord(
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         api_name="CreateProcessA",
                         syscall_name=None,
                         params={"cmd": "powershell"},
@@ -368,7 +368,7 @@ class TestGenerateNavigatorLayer:
                 evidence_count=2,
                 evidence=[
                     APICallRecord(
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         api_name="CreateProcessA",
                         syscall_name=None,
                         params={},
@@ -376,7 +376,7 @@ class TestGenerateNavigatorLayer:
                         address="0x1000",
                     ),
                     APICallRecord(
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         api_name="VirtualAllocEx",
                         syscall_name=None,
                         params={},
@@ -492,7 +492,7 @@ class TestSaveNavigatorLayer:
                 evidence_count=1,
                 evidence=[
                     APICallRecord(
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         api_name="CréateProcessA",  # UTF-8 char in API name
                         syscall_name=None,
                         params={},

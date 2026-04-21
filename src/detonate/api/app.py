@@ -61,12 +61,99 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     # Health check endpoint
     @app.get("/health")
     async def health_check():
-        return {
+        """
+        Health check endpoint with dependency validation.
+        
+        Returns 200 if all dependencies are healthy, 503 if any are unhealthy.
+        Response body contains detailed component status for debugging.
+        """
+        import os
+        import shutil
+        
+        from fastapi.responses import JSONResponse
+        
+        health_status = {
             "status": "healthy",
             "version": "0.1.0",
-            "uptime_seconds": (datetime.now(timezone.utc) - app.state.start_time).total_seconds()
-            if hasattr(app.state, "start_time")
-            else 0,
+            "components": {},
+            "uptime_seconds": None,
         }
+        
+        # Check database connectivity
+        try:
+            db = getattr(app.state, "db", None)
+            if db is None:
+                health_status["components"]["database"] = {
+                    "status": "unhealthy",
+                    "error": "Database not initialized",
+                }
+                health_status["status"] = "unhealthy"
+            else:
+                # Test database connectivity with a simple query
+                db.get_analysis("nonexistent-session-id-for-health-check")
+                health_status["components"]["database"] = {
+                    "status": "healthy",
+                    "path": str(app.state.db_path),
+                }
+        except Exception as e:
+            health_status["components"]["database"] = {
+                "status": "unhealthy",
+                "error": str(e),
+            }
+            health_status["status"] = "unhealthy"
+        
+        # Check disk space for output directory
+        try:
+            output_dir = settings.output_dir
+            if output_dir.exists():
+                total, used, free = shutil.disk_usage(str(output_dir))
+                # Mark unhealthy if less than 100MB free
+                min_free_bytes = 100 * 1024 * 1024
+                if free < min_free_bytes:
+                    health_status["components"]["disk_space"] = {
+                        "status": "unhealthy",
+                        "error": f"Less than 100MB free ({free / (1024*1024):.1f}MB available)",
+                        "free_bytes": free,
+                    }
+                    health_status["status"] = "unhealthy"
+                else:
+                    health_status["components"]["disk_space"] = {
+                        "status": "healthy",
+                        "path": str(output_dir),
+                        "free_bytes": free,
+                        "free_mb": free / (1024 * 1024),
+                    }
+            else:
+                # Output dir doesn't exist yet - try to create it
+                try:
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    health_status["components"]["disk_space"] = {
+                        "status": "healthy",
+                        "path": str(output_dir),
+                        "note": "Directory created",
+                    }
+                except Exception as e:
+                    health_status["components"]["disk_space"] = {
+                        "status": "unhealthy",
+                        "error": f"Cannot create output directory: {str(e)}",
+                    }
+                    health_status["status"] = "unhealthy"
+        except Exception as e:
+            health_status["components"]["disk_space"] = {
+                "status": "unhealthy",
+                "error": str(e),
+            }
+            health_status["status"] = "unhealthy"
+        
+        # Calculate uptime
+        start_time = getattr(app.state, "start_time", None)
+        if start_time:
+            health_status["uptime_seconds"] = (datetime.now(timezone.utc) - start_time).total_seconds()
+        
+        # Return appropriate status code
+        if health_status["status"] == "healthy":
+            return JSONResponse(content=health_status, status_code=200)
+        else:
+            return JSONResponse(content=health_status, status_code=503)
 
     return app
