@@ -1,1629 +1,417 @@
-# Detonate — Implementation Plan
+# Detonate — Comprehensive Fix Plan
 
-A Docker-based malware analysis platform using Qiling emulation, mapping observed behavior to MITRE ATT&CK techniques, with four output formats and both CLI + REST API interfaces.
+## Project Overview
 
----
+**detonate** is a Docker-based malware analysis platform that uses Qiling emulation to observe binary behavior and map it to MITRE ATT&CK techniques. It produces four output formats (ATT&CK Navigator layers, STIX 2.1 bundles, Markdown reports, and structured JSON logs) through both a CLI and a REST API.
 
-## Table of Contents
-
-1. [High-Level Architecture](#high-level-architecture)
-2. [Project Structure](#project-structure)
-3. [Component Specifications](#component-specifications)
-4. [ATT&CK Mapping Reference](#attck-mapping-reference)
-5. [Output Format Specifications](#output-format-specifications)
-6. [REST API Specification](#rest-api-specification)
-7. [CLI Specification](#cli-specification)
-8. [Database Schema](#database-schema)
-9. [Docker Configuration](#docker-configuration)
-10. [Implementation Sequence](#implementation-sequence)
-11. [Testing Strategy](#testing-strategy)
-12. [Security Considerations](#security-considerations)
+The project has a well-structured codebase with 32 source files, comprehensive tests (199 passing), and a Docker deployment setup. However, it cannot actually build, run, or function end-to-end due to several critical issues.
 
 ---
 
-## High-Level Architecture
+## Issue Inventory
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  Docker Container (multi-stage, hardened, no network)        │
-│                                                              │
-│  ┌──────────────┐    ┌──────────────────┐    ┌────────────┐ │
-│  │   FastAPI    │───▶│   Qiling         │───▶│   Output   │ │
-│  │   REST API   │    │   Emulator       │    │   Pipeline │ │
-│  │   (port 8000)│    │   + Hooks        │    │            │ │
-│  └──────────────┘    └──────────────────┘    └────────────┘ │
-│         │                    │                    │          │
-│         │              ┌──────────────────┐      │          │
-│         │              │   ATT&CK         │      │          │
-│         │              │   Mapping        │      │          │
-│         │              │   Engine         │      │          │
-│         │              └──────────────────┘      │          │
-│         │                                        │          │
-│  ┌──────────────┐    ┌──────────────────┐    ┌────────────┐ │
-│  │   SQLite     │    │   structlog      │    │   STIX/    │ │
-│  │   Database   │    │   JSON Logs      │    │   Navigator│ │
-│  └──────────────┘    └──────────────────┘    └────────────┘ │
-└──────────────────────────────────────────────────────────────┘
-                              │
-         ┌────────────────────┼────────────────────┐
-         │                    │                    │
-    ┌────▼────┐          ┌────▼────┐         ┌────▼────┐
-    │ Samples │          │  DLLs   │         │ Output  │
-    │  (ro)   │          │  (ro)   │         │  (rw)   │
-    └─────────┘          └─────────┘         └─────────┘
-```
+### Issue 1: Qiling Constructor API Mismatch (Critical)
 
-### Data Flow
+**File:** `src/detonate/core/emulator.py:166-181`
 
-1. **Sample Submission**: User submits binary via CLI or REST API
-2. **Emulation Setup**: Qiling instance configured with appropriate rootfs, hooks
-3. **Execution**: Binary runs in emulated environment (timeout: 60s default)
-4. **Hook Capture**: API calls/syscalls intercepted, mapped to ATT&CK techniques
-5. **Log Streaming**: structlog emits JSON events in real-time
-6. **Result Generation**: Navigator layer, STIX bundle, and report generated
-7. **Persistence**: All data stored in SQLite database
-8. **Output Delivery**: Results returned to user or stored for retrieval
-
----
-
-## Project Structure
-
-```
-detonate/
-├── Dockerfile                    # Multi-stage build (builder + runtime)
-├── docker-compose.yml            # Compose config for API mode
-├── docker-compose.cli.yml        # Compose config for CLI mode
-├── pyproject.toml                # Project metadata, dependencies, scripts
-├── poetry.lock                   # Poetry lock file
-├── README.md                     # Project documentation
-├── task.md                       # This implementation plan
-├── .gitignore
-├── .dockerignore
-├── src/
-│   └── detonate/
-│       ├── __init__.py           # Package init, version info
-│       ├── cli.py                # CLI entry point (typer-based)
-│       ├── config.py             # Settings management (pydantic-settings)
-│       │
-│       ├── api/                  # FastAPI REST API
-│       │   ├── __init__.py
-│       │   ├── app.py            # FastAPI app factory
-│       │   ├── routes.py         # API route handlers
-│       │   ├── models.py         # Pydantic request/response models
-│       │   └── middleware.py     # Request logging, error handling
-│       │
-│       ├── core/                 # Core emulation logic
-│       │   ├── __init__.py
-│       │   ├── emulator.py       # Qiling wrapper (setup, run, hooks)
-│       │   ├── session.py        # Analysis session management
-│       │   ├── timeout.py        # Execution timeout enforcement
-│       │   └── hooks/            # API/syscall hook definitions
-│       │       ├── __init__.py
-│       │       ├── windows.py    # Windows API hooks → ATT&CK
-│       │       └── linux.py      # Linux syscall hooks → ATT&CK
-│       │
-│       ├── mapping/              # ATT&CK mapping engine
-│       │   ├── __init__.py
-│       │   ├── engine.py         # Mapping logic, confidence scoring
-│       │   ├── patterns.py       # Multi-call pattern detection
-│       │   ├── windows_map.py    # Windows API → ATT&CK technique dict
-│       │   ├── linux_map.py      # Linux syscall → ATT&CK technique dict
-│       │   └── stix_data.py      # Load & query ATT&CK STIX data
-│       │
-│       ├── output/               # Output format generators
-│       │   ├── __init__.py
-│       │   ├── json_log.py       # structlog configuration
-│       │   ├── navigator.py      # ATT&CK Navigator layer generator
-│       │   ├── stix.py           # STIX 2.1 bundle generator
-│       │   └── report.py         # Human-readable report (markdown)
-│       │
-│       ├── db/                   # Database layer
-│       │   ├── __init__.py
-│       │   ├── models.py         # SQLAlchemy ORM models
-│       │   ├── store.py          # CRUD operations
-│       │   └── init_db.py        # Database initialization
-│       │
-│       └── utils/                # Utility functions
-│           ├── __init__.py
-│           ├── hashing.py        # SHA256, file type detection
-│           └── binary.py         # PE/ELF detection, architecture detection
-│
-├── data/
-│   ├── attack_stix/              # MITRE ATT&CK STIX 2.1 JSON
-│   │   └── enterprise-attack.json
-│   └── rootfs/                   # Qiling rootfs (Linux bundled)
-│       ├── x86_linux/
-│       └── x8664_linux/
-│
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py               # Pytest fixtures
-│   ├── test_emulator.py          # Emulator wrapper tests
-│   ├── test_mapping.py           # ATT&CK mapping tests
-│   ├── test_output.py            # Output generator tests
-│   ├── test_api.py               # REST API tests
-│   └── test_cli.py               # CLI tests
-│
-└── examples/
-    ├── samples/                  # Test malware samples (benign test binaries)
-    └── outputs/                  # Example output files
-```
-
----
-
-## Component Specifications
-
-### 1. Core Emulator (`core/emulator.py`)
-
-**Class: `DetonateEmulator`**
+**Problem:** The `_run_emulation()` method passes `archname=` and `ostype=` as strings to `Qiling()`, but the installed Qiling (v1.4+) uses different parameter names and enum types:
 
 ```python
-class DetonateEmulator:
-    def __init__(
-        self,
-        sample_path: str,
-        rootfs_path: str,
-        platform: str = "auto",
-        arch: str = "auto",
-        timeout: int = 60,
-    )
-    
-    async def run(self) -> AnalysisResult:
-        """Run emulation and return results."""
-    
-    def _setup_hooks(self) -> None:
-        """Configure Qiling hooks based on platform."""
-    
-    def _detect_platform(self) -> tuple[str, str]:
-        """Auto-detect platform and architecture from binary."""
-```
-
-**Responsibilities:**
-- Auto-detect binary type (PE/ELF) and architecture (x86/x86_64/ARM/ARM64)
-- Initialize Qiling instance with appropriate rootfs
-- Set up platform-specific hooks (Windows API or Linux syscall)
-- Enforce execution timeout
-- Capture exceptions and preserve partial results
-- Return `AnalysisResult` dataclass with all captured data
-
-**Key Qiling Integration Points:**
-- `ql.os.set_api(api_name, callback)` for Windows API hooking
-- `ql.hook_intno(callback, intno)` for Linux syscall interception
-- `ql.os.stats.strings` for string extraction
-- `ql.os.syscalls` for API call history
-- `ql.mem.string(addr)` for reading strings from emulated memory
-
----
-
-### 2. Hook Definitions (`core/hooks/`)
-
-#### Windows Hooks (`windows.py`)
-
-```python
-# Hook callback signature
-def hook_CreateProcessA(ql: Qiling) -> None:
-    """Hook CreateProcessA to detect process execution."""
-    # Read lpCommandLine parameter
-    cmd_line = ql.mem.string(ql.os.f_param_read(1))
-    
-    # Map to ATT&CK based on command
-    technique = detect_technique_from_command(cmd_line)
-    
-    # Emit structured log event
-    log_event(
-        event="api_call",
-        api="CreateProcessA",
-        params={"lpCommandLine": cmd_line},
-        technique_id=technique.id,
-        tactic=technique.tactic,
-        confidence=technique.confidence,
-    )
-```
-
-**Hooked Windows APIs (non-exhaustive):**
-
-| Category | APIs |
-|---|---|
-| **Process Execution** | `CreateProcessA/W`, `ShellExecuteA/W`, `WinExec` |
-| **Process Injection** | `VirtualAllocEx`, `WriteProcessMemory`, `CreateRemoteThread`, `NtCreateThreadEx`, `SetThreadContext` |
-| **Registry Access** | `RegOpenKeyExA/W`, `RegQueryValueExA/W`, `RegSetValueExA/W`, `RegCreateKeyExA/W` |
-| **File Operations** | `CreateFileA/W`, `ReadFile`, `WriteFile`, `DeleteFileA/W` |
-| **Service Operations** | `CreateServiceA/W`, `StartServiceA/W`, `OpenServiceA/W` |
-| **Network** | `InternetOpenA/W`, `InternetConnectA/W`, `HttpOpenRequestA/W`, `socket`, `connect`, `send`, `recv` |
-| **Crypto** | `CryptEncrypt`, `CryptDecrypt`, `CryptGenKey` |
-| **Privilege** | `AdjustTokenPrivileges`, `OpenProcessToken`, `LookupPrivilegeValueA/W` |
-| **DLL Loading** | `LoadLibraryA/W`, `GetProcAddress`, `LdrLoadDll` |
-| **Synchronization** | `CreateMutexA/W`, `OpenMutexA/W` |
-| **Native APIs** | `NtCreateFile`, `NtOpenKey`, `NtSetValueKey`, `NtCreateSection` |
-
-#### Linux Hooks (`linux.py`)
-
-```python
-# Hook callback signature
-def hook_syscall_execve(ql: Qiling) -> None:
-    """Hook execve syscall to detect command execution."""
-    filename = ql.mem.string(ql.arch.regs.rdi)  # x86_64
-    argv = read_argv(ql.arch.regs.rsi)
-    
-    technique = detect_technique_from_command(filename, argv)
-    
-    log_event(
-        event="syscall",
-        syscall="execve",
-        params={"filename": filename, "argv": argv},
-        technique_id=technique.id,
-        tactic=technique.tactic,
-        confidence=technique.confidence,
-    )
-```
-
-**Hooked Linux Syscalls (non-exhaustive):**
-
-| Category | Syscalls |
-|---|---|
-| **Process Execution** | `execve`, `execveat` |
-| **Process Injection** | `ptrace`, `process_vm_writev` |
-| **File Operations** | `open`, `openat`, `read`, `write`, `unlink`, `unlinkat` |
-| **Network** | `socket`, `connect`, `sendto`, `recvfrom`, `bind`, `listen` |
-| **Process Management** | `clone`, `fork`, `vfork`, `kill` |
-| **Privilege** | `setuid`, `setgid`, `setreuid`, `setregid` |
-| **Memory** | `mmap`, `mprotect`, `mremap` |
-
----
-
-### 3. ATT&CK Mapping Engine (`mapping/engine.py`)
-
-**Class: `ATTCKMapper`**
-
-```python
-class ATTCKMapper:
-    def __init__(self, stix_store: MemoryStore)
-    
-    def map_api_call(
-        self,
-        api_name: str,
-        params: dict,
-        platform: str,
-    ) -> TechniqueMatch:
-        """Map a single API call to ATT&CK technique(s)."""
-    
-    def detect_patterns(
-        self,
-        api_calls: list[APICall],
-    ) -> list[PatternMatch]:
-        """Detect multi-call patterns (e.g., process injection chain)."""
-    
-    def get_technique_metadata(
-        self,
-        technique_id: str,
-    ) -> TechniqueMetadata:
-        """Retrieve technique metadata from STIX data."""
-```
-
-**Confidence Scoring:**
-
-| Confidence Level | Score | Criteria |
-|---|---|---|
-| **High** | 0.8–1.0 | Direct API-to-technique match with confirming parameters |
-| **Medium** | 0.5–0.79 | API match without parameter confirmation, or pattern match |
-| **Low** | 0.2–0.49 | Heuristic match, suspicious but not definitive |
-
-**Pattern Detection Examples:**
-
-| Pattern | Sequence | ATT&CK Technique |
-|---|---|---|
-| **Process Injection (Classic)** | `OpenProcess` → `VirtualAllocEx` → `WriteProcessMemory` → `CreateRemoteThread` | T1055.001 |
-| **Process Hollowing** | `CreateProcess` (suspended) → `NtUnmapViewOfSection` → `VirtualAllocEx` → `WriteProcessMemory` → `SetThreadContext` → `ResumeThread` | T1055.012 |
-| **DLL Side-Loading** | `CreateProcess` → `LoadLibrary` (unexpected path) | T1574.002 |
-| **Registry Persistence** | `RegOpenKey` (Run key) → `RegSetValueEx` | T1547.001 |
-
----
-
-### 4. Output Generators (`output/`)
-
-#### Structured JSON Logs (`json_log.py`)
-
-```python
-# structlog configuration
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer(),
-    ],
-    logger_factory=structlog.PrintLoggerFactory(sys.stdout),
-)
-
-# Usage in hooks
-log = structlog.get_logger()
-log.bind(
-    session_id=session_id,
-    sample_sha256=sample_hash,
-    platform=platform,
-)
-log.info(
-    "api_call",
-    technique_id="T1059.001",
-    technique_name="PowerShell",
-    tactic="execution",
-    confidence="high",
-    api="CreateProcessA",
-    params={"lpCommandLine": "powershell -enc ..."},
-    return_value=True,
+# Current (broken):
+ql = Qiling(
+    argv=[str(self.sample_path)],
+    rootfs=str(self.rootfs_path),
+    archname=ql_arch,     # Wrong parameter name
+    ostype=profile,         # Wrong parameter name and type
+    console=False,
 )
 ```
 
-**Log Event Schema:**
-```json
-{
-  "event": "api_call|syscall|pattern_detected|analysis_complete",
-  "timestamp": "2026-04-20T18:45:00Z",
-  "session_id": "uuid4",
-  "sample_sha256": "hex string",
-  "platform": "windows|linux",
-  "architecture": "x86|x86_64|arm|arm64",
-  "technique_id": "TXXXX.XXX",
-  "technique_name": "Technique Name",
-  "tactic": "tactic-name",
-  "confidence": "high|medium|low",
-  "api": "API name",
-  "syscall": "Syscall name",
-  "params": {...},
-  "return_value": ...,
-  "address": "0x00000000"
-}
+**Correct API:**
+```python
+from qiling.const import QL_ARCH, QL_OS
+
+ql = Qiling(
+    argv=[str(self.sample_path)],
+    rootfs=str(self.rootfs_path),
+    archtype=QL_ARCH.X8664,  # Enum, not string
+    ostype=QL_OS.LINUX,       # Enum, not string
+    console=False,
+)
 ```
 
-#### Navigator Layer Generator (`navigator.py`)
+**Verified:** `Qiling(argv=['/bin/true'], rootfs='/', archtype=QL_ARCH.X8664, ostype=QL_OS.LINUX, console=False)` works correctly.
+
+**Fix:**
+- Add `from qiling.const import QL_ARCH, QL_OS` to emulator.py
+- Replace `arch_map` dict with proper enum mapping
+- Change `archname=` to `archtype=` and `ostype=` to use `QL_OS` enum
+- Pass `console=False` to suppress Qiling's default stdout output
+
+---
+
+### Issue 2: Empty Rootfs Directories (Critical)
+
+**Files:** `data/rootfs/x86_linux/`, `data/rootfs/x8664_linux/`
+
+**Problem:** Both rootfs directories are empty. Qiling requires a rootfs with at minimum the dynamic linker (`ld-linux-*`) and libc to emulate dynamically-linked binaries. When empty rootfs paths are passed, Qiling fails with:
+
+```
+FileNotFoundError: [Errno 2] No such file or directory: '.../lib64/ld-linux-x86-64.so.2'
+```
+
+**Fix:**
+- For **local development** on Linux, default the rootfs to `/` (the system root) when no custom rootfs is specified. This allows analyzing local Linux binaries without needing a separate rootfs.
+- For **Docker deployment**, the rootfs should be populated either by downloading Qiling's default rootfs or by copying the minimal required files from the container's filesystem.
+- Update `config.py` `get_rootfs_path()` to return `/` for Linux when the configured rootfs directory is empty or doesn't contain the expected structure.
+- Add a `--rootfs` default that falls back intelligently: if `/` is a valid Linux root (has `/lib64/ld-linux-x86-64.so.2` or `/lib/ld-linux.so.2`), use it; otherwise require explicit `--rootfs`.
+
+---
+
+### Issue 3: Default Database Path Permission Error (High)
+
+**File:** `src/detonate/config.py:18`
+
+**Problem:** Default database path `/var/lib/detonate/detonate.db` requires root permissions. Running `detonate analyze` locally fails with:
+
+```
+PermissionError: [Errno 13] Permission denied: '/var/lib/detonate'
+```
+
+**Fix:**
+- Change default `database` setting from `/var/lib/detonate/detonate.db` to `./data/detonate.db` (relative to current directory)
+- Keep the Docker/deployment default as `/var/lib/detonate/detonate.db` via the `DETONATE_DATABASE` environment variable (which docker-compose.yml already sets)
+- Update `init_database()` to create parent directories (it already does `path.parent.mkdir(parents=True, exist_ok=True)`)
+
+---
+
+### Issue 4: Linux Syscall Hooking API Incorrect (Critical)
+
+**File:** `src/detonate/core/hooks/linux.py` — `install()` method (~line 100)
+
+**Problem:** The `install()` method uses two incorrect Qiling APIs:
 
 ```python
-def generate_navigator_layer(
-    session_id: str,
-    sample_hash: str,
-    findings: list[TechniqueMatch],
-) -> dict:
-    """Generate ATT&CK Navigator layer JSON."""
+# Current (broken):
+for syscall_num, hook_func in self.hooks.items():
+    try:
+        self.ql.hook_intno(hook_func, syscall_num)        # Wrong: this hooks int 0x80, not syscall instruction
+        self.ql.hook_syscall(self._capture_return_value, syscall_num)  # Wrong: hook_syscall doesn't exist on ql
+    except Exception as e:
+        log.debug("hook_install_failed", syscall=syscall_num, error=str(e))
 ```
 
-**Output Format:**
-```json
-{
-  "version": "4.5",
-  "name": "detonate: malware.exe (4a8c...)",
-  "domain": "enterprise-attack",
-  "description": "Analysis of sample 4a8c... on 2026-04-20",
-  "techniques": [
-    {
-      "techniqueID": "T1059.001",
-      "tactic": "execution",
-      "score": 8,
-      "color": "#ff6666",
-      "comment": "CreateProcessA → powershell -enc (confidence: high)",
-      "enabled": true,
-      "showSubtechniques": true,
-      "metadata": [
-        {"name": "api", "value": "CreateProcessA"},
-        {"name": "confidence", "value": "high"},
-        {"name": "evidence_count", "value": "3"}
-      ]
-    }
-  ],
-  "gradient": {
-    "colors": ["#ffffff", "#ff6666", "#ff0000"],
-    "minValue": 0,
-    "maxValue": 10
-  },
-  "legendItems": [
-    {"color": "#ff6666", "label": "Low confidence"},
-    {"color": "#ff0000", "label": "High confidence"}
-  ],
-  "filters": {
-    "platforms": ["Windows"]
-  }
-}
+**Issues:**
+1. `ql.hook_intno(callback, intno)` hooks software interrupts (int 0x80), NOT the `syscall` instruction used by x86_64 Linux. This means none of the Linux syscall hooks actually fire.
+2. `ql.hook_syscall` does not exist as a method on `Qiling` — it exists on `ql.os` as `ql.os.hook_syscall()`, but that's also not the correct way to hook individual syscalls by name/number.
+
+**Correct API (verified):**
+```python
+# Use ql.os.set_syscall() for hooking individual syscalls by name or number:
+# ql.os.set_syscall(target, handler, intercept=QL_INTERCEPT.CALL)
+# target: syscall name (str) or number (int)
+# handler: callback function receiving the ql instance
 ```
 
-**Score Calculation:**
-```
-score = confidence_score × 10 × log(evidence_count + 1)
-```
+The `set_syscall` method is inherited from `QlOsPosix` and works for both Linux and other POSIX OSes. It supports:
+- `QL_INTERCEPT.CALL` — replace the syscall implementation entirely
+- `QL_INTERCEPT.ENTER` — run handler before the syscall
+- `QL_INTERCEPT.EXIT` — run handler after the syscall (for return value capture)
 
-#### STIX 2.1 Bundle Generator (`stix.py`)
+**Fix:**
+- Replace `install()` to use `self.ql.os.set_syscall(name_or_number, handler)` for each syscall
+- Use syscall names (strings) where possible: `"execve"`, `"openat"`, etc. — these are more portable than numbers
+- For return value capture, use `QL_INTERCEPT.EXIT` or wrap handlers to read return values after the call
+- Remove the `_capture_return_value` method that relies on the non-existent `ql.hook_syscall`
+- The Linux hook handler methods (e.g., `hook_sys_execve`) need to be updated to match Qiling's expected callback signature: `def handler(ql)` — they currently receive `(ql, intno)` which is the `hook_intno` signature
+
+**Additional issue with hook callbacks:** The current Linux hooks are written with the wrong signature. They expect `(ql, intno)` from `hook_intno`, but `set_syscall` handlers receive just `(ql)`. The hooks also read parameters using `ql.os.f_param_read()` which is a Windows/PE-specific API — Linux syscalls read parameters from registers (e.g., `ql.os.f_param_read()` doesn't exist for Linux). Linux syscalls pass arguments in registers:
+- x86_64: rdi, rsi, rdx, r10, r8, r9
+- Access via: `ql.reg.read(ql.reg.read("rdi"))` or `ql.os.get_syscall_arg(0)`, etc.
+
+This is a significant rewrite of `linux.py`. The correct approach for reading syscall parameters on Linux is:
 
 ```python
-def generate_stix_bundle(
-    session_id: str,
-    sample_hash: str,
-    sample_path: str,
-    findings: list[TechniqueMatch],
-    api_calls: list[APICall],
-) -> Bundle:
-    """Generate STIX 2.1 bundle with ATT&CK mappings."""
+# For x86_64 Linux:
+arg0 = ql.os.get_syscall_arg(0)  # rdi
+arg1 = ql.os.get_syscall_arg(1)  # rsi
+# etc.
+
+# Or directly via registers:
+arg0 = ql.reg.read("rdi")
 ```
 
-**Bundle Contents:**
-
-1. **`malware` object** (the sample):
-```json
-{
-  "type": "malware",
-  "id": "malware--<uuid>",
-  "name": "sample_4a8c...",
-  "is_family": false,
-  "external_references": [
-    {
-      "source_name": "detonate",
-      "external_id": "4a8c...",
-      "description": "SHA256 hash of analyzed sample"
-    }
-  ]
-}
+And for reading strings from memory (e.g., filename for open/openat):
+```python
+filename = ql.mem.string(arg0)
 ```
 
-2. **`attack-pattern` objects** (techniques):
-```json
-{
-  "type": "attack-pattern",
-  "id": "attack-pattern--<uuid>",
-  "name": "PowerShell",
-  "external_references": [
-    {
-      "source_name": "mitre-attack",
-      "external_id": "T1059.001",
-      "url": "https://attack.mitre.org/techniques/T1059/001/"
-    }
-  ],
-  "kill_chain_phases": [
-    {
-      "kill_chain_name": "mitre-attack",
-      "phase_name": "execution"
-    }
-  ]
-}
-```
+**This means the entire `linux.py` hook implementation needs to be rewritten to use the correct register-based parameter reading instead of `ql.os.f_param_read()` which is Windows-only.**
 
-3. **`relationship` objects** (malware uses technique):
-```json
-{
-  "type": "relationship",
-  "id": "relationship--<uuid>",
-  "relationship_type": "uses",
-  "source_ref": "malware--<uuid>",
-  "target_ref": "attack-pattern--<uuid>",
-  "description": "CreateProcessA called with powershell.exe"
-}
-```
+---
 
-4. **`observed-data` objects** (API call evidence):
-```json
-{
-  "type": "observed-data",
-  "id": "observed-data--<uuid>",
-  "objects": {
-    "0": {
-      "type": "windows-registry-ext",
-      "key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
-    }
-  },
-  "first_observed": "2026-04-20T18:45:00Z",
-  "last_observed": "2026-04-20T18:45:01Z",
-  "number_observed": 1
-}
-```
+### Issue 5: Deprecated `datetime.utcnow()` (Medium)
 
-#### Human-Readable Report Generator (`report.py`)
+**File:** `src/detonate/output/navigator.py:120`
+
+**Problem:** Uses `datetime.utcnow()` which is deprecated in Python 3.12+ (13 deprecation warnings in tests).
 
 ```python
-def generate_report(
-    session_id: str,
-    sample_info: SampleInfo,
-    findings: list[TechniqueMatch],
-    api_calls: list[APICall],
-) -> str:
-    """Generate Markdown report."""
+# Current:
+analysis_date = datetime.utcnow()
 ```
 
-**Report Structure:**
-
-```markdown
-# Detonate Analysis Report
-
-## Sample Information
-
-| Field | Value |
-|-------|-------|
-| SHA256 | 4a8c... |
-| MD5 | ... |
-| File Type | PE32 executable |
-| Platform | Windows x86 |
-| Analysis Date | 2026-04-20 18:45:00 UTC |
-| Duration | 45.2 seconds |
-
-## Executive Summary
-
-This sample exhibited behavior consistent with **8 ATT&CK techniques** across **5 tactics**.
-Notable findings include process injection patterns and registry persistence mechanisms.
-
-## ATT&CK Techniques Detected
-
-| Technique ID | Technique Name | Tactic | Confidence | Evidence Count |
-|--------------|----------------|--------|------------|----------------|
-| T1055.001 | Dynamic-link Library Injection | Defense Evasion | High | 5 |
-| T1547.001 | Registry Run Keys | Persistence | High | 3 |
-| T1059.001 | PowerShell | Execution | Medium | 2 |
-
-## Detailed Findings
-
-### T1055.001 - Dynamic-link Library Injection
-
-**Confidence:** High  
-**Tactic:** Defense Evasion  
-**Evidence:** 5 API calls
-
-**Timeline:**
-```
-18:45:00.123 - OpenProcess(PROCESS_ALL_ACCESS, pid=1234)
-18:45:00.156 - VirtualAllocEx(hProcess, 0x1000, 0x1000, MEM_COMMIT, PAGE_EXECUTE_READWRITE)
-18:45:00.189 - WriteProcessMemory(hProcess, 0x1000, ..., 0x500)
-18:45:00.222 - CreateRemoteThread(hProcess, 0x1000, ...)
+**Fix:**
+```python
+from datetime import timezone
+analysis_date = datetime.now(timezone.utc)
 ```
 
-### T1547.001 - Registry Run Keys
-
-**Confidence:** High  
-**Tactic:** Persistence  
-**Evidence:** 3 API calls
-
-**Timeline:**
-```
-18:45:01.001 - RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run")
-18:45:01.034 - RegSetValueExA("malware", "C:\\Windows\\malware.exe")
-```
-
-## Network Activity
-
-No network activity observed.
-
-## File System Activity
-
-| Path | Operation | Result |
-|------|-----------|--------|
-| C:\Windows\malware.exe | CreateFile | SUCCESS |
-| C:\Users\Public\config.ini | WriteFile | SUCCESS |
-
-## Strings of Interest
-
-- `powershell -enc`
-- `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`
-- `http://malicious-domain.com/beacon`
-
-## Output Files
-
-- Navigator Layer: `navigator_4a8c.json`
-- STIX Bundle: `stix_4a8c.json`
-- JSON Log: `log_4a8c.jsonl`
-```
+Also update test files that use `datetime.utcnow()` in `tests/test_navigator.py`.
 
 ---
 
-## REST API Specification
+### Issue 6: Docker Build Failures (Medium)
 
-### Base URL
+**File:** `Dockerfile`
 
-```
-http://localhost:8000/api/v1
-```
+**Problems:**
+1. `COPY data/rootfs/x86_linux/ ./data/rootfs/x86_linux/` — these directories are empty, Docker `COPY` of empty directories fails or creates no content
+2. `COPY pyproject.toml poetry.lock ./` — `poetry.lock` doesn't exist, causing `COPY` to fail
+3. `RUN poetry install --no-root --only main` — will fail without `poetry.lock`
+4. Healthcheck uses `python -c "import requests; ..."` but `requests` is not a dependency
 
-### Endpoints
-
-#### `POST /analyze`
-
-Submit a sample for analysis.
-
-**Request:**
-```
-Content-Type: multipart/form-data
-
-file: <binary file>
-platform: "auto" | "windows" | "linux"  (optional, default: "auto")
-arch: "auto" | "x86" | "x86_64" | "arm" | "arm64"  (optional, default: "auto")
-timeout: <int seconds>  (optional, default: 60)
-```
-
-**Response (202 Accepted):**
-```json
-{
-  "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "running",
-  "created_at": "2026-04-20T18:45:00Z"
-}
-```
-
-**Errors:**
-- `400 Bad Request`: Invalid file type, missing file
-- `422 Unprocessable Entity`: Invalid parameters
-- `500 Internal Server Error`: Emulation failure
+**Fix:**
+- Generate `poetry.lock` by running `poetry lock` locally and commit it
+- For rootfs: either download Qiling's rootfs during Docker build, or copy from the container's own filesystem
+- For the healthcheck, use `curl` (which is already installed) or `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"`
+- Add a step to download ATT&CK STIX data (currently curl's from GitHub, which is fine)
 
 ---
 
-#### `GET /analyze/{session_id}`
+### Issue 7: Docker Compose Healthcheck (Medium)
 
-Get analysis status and results.
+**File:** `docker-compose.yml:47`
 
-**Response (200 OK):**
-```json
-{
-  "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "completed",
-  "sample": {
-    "sha256": "4a8c...",
-    "md5": "...",
-    "size": 12345,
-    "file_type": "PE32 executable",
-    "platform": "windows",
-    "architecture": "x86"
-  },
-  "analysis": {
-    "started_at": "2026-04-20T18:45:00Z",
-    "completed_at": "2026-04-20T18:45:45Z",
-    "duration_seconds": 45.2,
-    "techniques_detected": 8,
-    "tactics_observed": ["execution", "defense-evasion", "persistence"]
-  },
-  "findings": [
-    {
-      "technique_id": "T1055.001",
-      "technique_name": "Dynamic-link Library Injection",
-      "tactic": "defense-evasion",
-      "confidence": "high",
-      "evidence_count": 5
-    }
-  ],
-  "outputs": {
-    "navigator": "/api/v1/reports/550e8400/navigator",
-    "stix": "/api/v1/reports/550e8400/stix",
-    "report": "/api/v1/reports/550e8400/report",
-    "log": "/api/v1/reports/550e8400/log"
-  }
-}
-```
-
-**Status Values:**
-- `pending`: Queued for analysis
-- `running`: Currently emulating
-- `completed`: Analysis finished successfully
-- `failed`: Analysis failed (timeout, crash, error)
-
----
-
-#### `GET /reports/{session_id}/navigator`
-
-Download ATT&CK Navigator layer JSON.
-
-**Response (200 OK):**
-```
-Content-Type: application/json
-Content-Disposition: attachment; filename="navigator_4a8c.json"
-
-{... Navigator layer JSON ...}
-```
-
----
-
-#### `GET /reports/{session_id}/stix`
-
-Download STIX 2.1 bundle.
-
-**Response (200 OK):**
-```
-Content-Type: application/json
-Content-Disposition: attachment; filename="stix_4a8c.json"
-
-{... STIX bundle JSON ...}
-```
-
----
-
-#### `GET /reports/{session_id}/report`
-
-Download human-readable Markdown report.
-
-**Response (200 OK):**
-```
-Content-Type: text/markdown
-Content-Disposition: attachment; filename="report_4a8c.md"
-
-# Detonate Analysis Report
-...
-```
-
----
-
-#### `GET /reports/{session_id}/log`
-
-Stream structured JSON log.
-
-**Response (200 OK):**
-```
-Content-Type: application/x-jsonlines
-
-{"event": "analysis_started", ...}
-{"event": "api_call", ...}
-{"event": "api_call", ...}
-{"event": "analysis_complete", ...}
-```
-
----
-
-#### `GET /reports`
-
-List all past analyses (paginated).
-
-**Query Parameters:**
-- `page`: Page number (default: 1)
-- `per_page`: Items per page (default: 20, max: 100)
-- `status`: Filter by status (`completed`, `failed`, `running`)
-- `platform`: Filter by platform (`windows`, `linux`)
-
-**Response (200 OK):**
-```json
-{
-  "items": [
-    {
-      "session_id": "550e8400-e29b-41d4-a716-446655440000",
-      "sample_sha256": "4a8c...",
-      "platform": "windows",
-      "status": "completed",
-      "created_at": "2026-04-20T18:45:00Z"
-    }
-  ],
-  "total": 150,
-  "page": 1,
-  "per_page": 20,
-  "pages": 8
-}
-```
-
----
-
-#### `DELETE /reports/{session_id}`
-
-Delete an analysis and its data.
-
-**Response (204 No Content)**
-
----
-
-#### `GET /health`
-
-Health check endpoint.
-
-**Response (200 OK):**
-```json
-{
-  "status": "healthy",
-  "version": "0.1.0",
-  "uptime_seconds": 3600
-}
-```
-
----
-
-## CLI Specification
-
-### Entry Point
-
-```bash
-detonate <command> [options]
-```
-
-### Commands
-
-#### `detonate analyze`
-
-Analyze a sample file.
-
-```bash
-detonate analyze <sample_path> [options]
-```
-
-**Options:**
-- `--platform`: `auto` | `windows` | `linux` (default: `auto`)
-- `--arch`: `auto` | `x86` | `x86_64` | `arm` | `arm64` (default: `auto`)
-- `--rootfs`: Path to rootfs directory (required for Windows samples)
-- `--dlls`: Path to Windows DLLs directory (required for Windows samples)
-- `--timeout`: Timeout in seconds (default: 60)
-- `--format`: Output formats: `json`, `navigator`, `stix`, `report`, `all` (default: `all`)
-- `--output`: Output directory (default: current directory)
-- `--verbose`: Enable verbose logging
-- `--quiet`: Suppress output except errors
-
-**Examples:**
-```bash
-# Analyze Windows PE with all outputs
-detonate analyze malware.exe --rootfs ./rootfs/x86_windows --dlls ./dlls --output ./results
-
-# Analyze Linux ELF, JSON output only
-detonate analyze linux_bin --format json --output ./results
-
-# Analyze with custom timeout
-detonate analyze slow_malware.exe --timeout 120 --rootfs ./rootfs/x86_windows
-```
-
-**Output Files:**
-```
-./results/
-├── navigator_4a8c.json
-├── stix_4a8c.json
-├── report_4a8c.md
-└── log_4a8c.jsonl
-```
-
----
-
-#### `detonate serve`
-
-Start the REST API server.
-
-```bash
-detonate serve [options]
-```
-
-**Options:**
-- `--host`: Bind host (default: `127.0.0.1`)
-- `--port`: Bind port (default: `8000`)
-- `--workers`: Number of worker processes (default: 1)
-- `--database`: SQLite database path (default: `/var/lib/detonate/detonate.db`)
-- `--rootfs`: Default rootfs path for Windows samples
-- `--dlls`: Default DLLs path for Windows samples
-- `--verbose`: Enable verbose logging
-
-**Examples:**
-```bash
-# Start server on default port
-detonate serve
-
-# Start server accessible from network
-detonate serve --host 0.0.0.0 --port 8000
-
-# Start with custom database location
-detonate serve --database ./data/detonate.db
-```
-
----
-
-#### `detonate list`
-
-List past analyses from the database.
-
-```bash
-detonate list [options]
-```
-
-**Options:**
-- `--status`: Filter by status (`completed`, `failed`, `running`)
-- `--platform`: Filter by platform (`windows`, `linux`)
-- `--limit`: Maximum results (default: 20)
-- `--format`: `table` | `json` (default: `table`)
-
-**Examples:**
-```bash
-# List recent analyses
-detonate list
-
-# List failed Windows analyses
-detonate list --status failed --platform windows
-
-# Output as JSON
-detonate list --format json
-```
-
----
-
-#### `detonate show`
-
-Show details of a specific analysis.
-
-```bash
-detonate show <session_id> [options]
-```
-
-**Options:**
-- `--format`: `summary` | `full` | `json` (default: `summary`)
-
----
-
-#### `detonate export`
-
-Export analysis results to various formats.
-
-```bash
-detonate export <session_id> --format <format> --output <path>
-```
-
-**Options:**
-- `--format`: `navigator` | `stix` | `report` | `log`
-- `--output`: Output file path
-
----
-
-#### `detonate db init`
-
-Initialize the SQLite database.
-
-```bash
-detonate db init --database <path>
-```
-
----
-
-#### `detonate db migrate`
-
-Run database migrations.
-
-```bash
-detonate db migrate --database <path>
-```
-
----
-
-## Database Schema
-
-### Table: `analyses`
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Internal ID |
-| `session_id` | TEXT | UNIQUE NOT NULL | UUID4 session identifier |
-| `sample_sha256` | TEXT | NOT NULL | SHA256 hash of sample |
-| `sample_md5` | TEXT | | MD5 hash of sample |
-| `sample_path` | TEXT | NOT NULL | Path to sample file |
-| `sample_size` | INTEGER | NOT NULL | File size in bytes |
-| `file_type` | TEXT | | Detected file type (PE32, ELF, etc.) |
-| `platform` | TEXT | NOT NULL | `windows` or `linux` |
-| `architecture` | TEXT | NOT NULL | `x86`, `x86_64`, `arm`, `arm64` |
-| `status` | TEXT | NOT NULL | `pending`, `running`, `completed`, `failed` |
-| `error_message` | TEXT | | Error message if failed |
-| `created_at` | DATETIME | NOT NULL | Analysis start time |
-| `completed_at` | DATETIME | | Analysis completion time |
-| `duration_seconds` | REAL | | Execution duration |
-
-**Indexes:**
-- `idx_analyses_session_id` (UNIQUE)
-- `idx_analyses_sample_sha256`
-- `idx_analyses_status`
-- `idx_analyses_created_at`
-
----
-
-### Table: `findings`
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Internal ID |
-| `analysis_id` | INTEGER | FOREIGN KEY → analyses.id | Parent analysis |
-| `technique_id` | TEXT | NOT NULL | ATT&CK technique ID (e.g., T1059.001) |
-| `technique_name` | TEXT | NOT NULL | ATT&CK technique name |
-| `tactic` | TEXT | NOT NULL | ATT&CK tactic name |
-| `confidence` | TEXT | NOT NULL | `high`, `medium`, `low` |
-| `confidence_score` | REAL | NOT NULL | Numeric confidence (0.0–1.0) |
-| `evidence_count` | INTEGER | NOT NULL | Number of API calls supporting this finding |
-| `first_seen` | DATETIME | NOT NULL | First occurrence timestamp |
-| `last_seen` | DATETIME | NOT NULL | Last occurrence timestamp |
-
-**Indexes:**
-- `idx_findings_analysis_id`
-- `idx_findings_technique_id`
-- `idx_findings_tactic`
-
----
-
-### Table: `api_calls`
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Internal ID |
-| `analysis_id` | INTEGER | FOREIGN KEY → analyses.id | Parent analysis |
-| `timestamp` | DATETIME | NOT NULL | Call timestamp |
-| `api_name` | TEXT | | Windows API name |
-| `syscall_name` | TEXT | | Linux syscall name |
-| `address` | TEXT | | Call address in hex |
-| `params_json` | TEXT | | JSON-encoded parameters |
-| `return_value` | TEXT | | Return value (stringified) |
-| `technique_id` | TEXT | | Mapped ATT&CK technique ID |
-| `confidence` | TEXT | | Mapping confidence |
-
-**Indexes:**
-- `idx_api_calls_analysis_id`
-- `idx_api_calls_api_name`
-- `idx_api_calls_technique_id`
-
----
-
-### Table: `strings`
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Internal ID |
-| `analysis_id` | INTEGER | FOREIGN KEY → analyses.id | Parent analysis |
-| `value` | TEXT | NOT NULL | String value |
-| `address` | TEXT | | Address where string was found |
-| `context` | TEXT | | Context (API param, memory, etc.) |
-
-**Indexes:**
-- `idx_strings_analysis_id`
-
----
-
-## Docker Configuration
-
-### Dockerfile (Multi-Stage)
-
-```dockerfile
-# =============================================================================
-# Stage 1: Builder
-# =============================================================================
-FROM python:3.12-slim AS builder
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    git \
-    libffi-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set working directory
-WORKDIR /build
-
-# Install Poetry
-RUN pip install --no-cache-dir poetry
-
-# Copy project files
-COPY pyproject.toml poetry.lock ./
-
-# Install dependencies
-RUN poetry install --no-root --only main
-
-# Copy source code
-COPY src/ ./src/
-
-# Download ATT&CK STIX data
-RUN mkdir -p data/attack_stix && \
-    curl -sL https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/enterprise-attack/enterprise-attack.json \
-    -o data/attack_stix/enterprise-attack.json
-
-# Copy Qiling Linux rootfs (from submodule or manual copy)
-COPY rootfs/x86_linux/ ./data/rootfs/x86_linux/
-COPY rootfs/x8664_linux/ ./data/rootfs/x8664_linux/
-
-# =============================================================================
-# Stage 2: Runtime
-# =============================================================================
-FROM python:3.12-slim AS runtime
-
-# Create non-root user
-RUN groupadd --gid 1000 detonate && \
-    useradd --uid 1000 --gid detonate --shell /bin/bash --create-home detonate
-
-# Set working directory
-WORKDIR /app
-
-# Copy installed packages from builder
-COPY --from=builder /build/.venv /app/.venv
-COPY --from=builder /build/src /app/src
-COPY --from=builder /build/data /app/data
-
-# Copy entrypoint script
-COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-# Set environment variables
-ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1 \
-    DETONATE_DATABASE=/var/lib/detonate/detonate.db \
-    DETONATE_ROOTFS=/app/data/rootfs
-
-# Create data directories
-RUN mkdir -p /var/lib/detonate /output /samples && \
-    chown -R detonate:nogroup /var/lib/detonate /output /app
-
-# Switch to non-root user
-USER detonate
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://127.0.0.1:8000/api/v1/health')" || exit 1
-
-# Expose API port
-EXPOSE 8000
-
-# Entrypoint
-ENTRYPOINT ["/entrypoint.sh"]
-
-# Default command
-CMD ["serve"]
-```
-
-### docker-compose.yml (API Mode)
+**Problem:** Healthcheck uses Python `requests` library which is not a project dependency:
 
 ```yaml
-version: '3.8'
-
-services:
-  detonate:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: detonate-api
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    networks:
-      - isolated
-    tmpfs:
-      - /tmp:noexec,nosuid,size=512m
-      - /dev/shm:noexec,nosuid,size=256m
-    volumes:
-      # Windows DLLs (user-provided)
-      - ./dlls/x86:/opt/rootfs/x86_windows/dlls:ro
-      - ./dlls/x86_64:/opt/rootfs/x8664_windows/dlls:ro
-      # Sample input
-      - ./samples:/samples:ro
-      # Output directory
-      - ./output:/output:rw
-      # Database persistence
-      - ./data/db:/var/lib/detonate:rw
-    ports:
-      - "127.0.0.1:8000:8000"
-    environment:
-      - DETONATE_DATABASE=/var/lib/detonate/detonate.db
-      - DETONATE_ROOTFS=/app/data/rootfs
-      - DETONATE_DLLS_X86=/opt/rootfs/x86_windows/dlls
-      - DETONATE_DLLS_X64=/opt/rootfs/x8664_windows/dlls
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
-          pids: 100
-        reservations:
-          cpus: '1'
-          memory: 1G
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://127.0.0.1:8000/api/v1/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
-networks:
-  isolated:
-    internal: true
-    driver: bridge
+test: ["CMD", "python", "-c", "import requests; requests.get('http://127.0.0.1:8000/api/v1/health')"]
 ```
 
-### docker-compose.cli.yml (CLI Mode)
+**Fix:** Use `curl` (already installed in the Docker image):
 
 ```yaml
-version: '3.8'
-
-services:
-  detonate:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: detonate-cli
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    networks:
-      - none
-    tmpfs:
-      - /tmp:noexec,nosuid,size=512m
-    volumes:
-      - ./dlls/x86:/opt/rootfs/x86_windows/dlls:ro
-      - ./dlls/x86_64:/opt/rootfs/x8664_windows/dlls:ro
-      - ./samples:/samples:ro
-      - ./output:/output:rw
-    environment:
-      - DETONATE_ROOTFS=/app/data/rootfs
-      - DETONATE_DLLS_X86=/opt/rootfs/x86_windows/dlls
-      - DETONATE_DLLS_X64=/opt/rootfs/x8664_windows/dlls
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
-          pids: 100
-    network_mode: none
+test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/v1/health"]
 ```
 
-### .dockerignore
+Or use Python's built-in `urllib`:
 
-```
-.git
-.gitignore
-*.md
-!README.md
-task.md
-tests/
-examples/
-*.pyc
-__pycache__
-.venv
-.pytest_cache
-.mypy_cache
-.coverage
-htmlcov/
-data/db/
-output/
-samples/
-dlls/
+```yaml
+test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"]
 ```
 
 ---
 
-## ATT&CK Mapping Reference
+### Issue 8: No Safe Test Samples (High)
 
-### Windows API → ATT&CK Techniques
+**Directory:** `examples/samples/` (empty)
 
-| API | Technique ID | Technique Name | Tactic | Confidence Base |
-|-----|--------------|----------------|--------|-----------------|
-| `CreateProcessA/W` | T1106 | Native API | Execution | Medium |
-| `CreateProcessA/W` (cmd.exe) | T1059.003 | Windows Command Shell | Execution | High |
-| `CreateProcessA/W` (powershell) | T1059.001 | PowerShell | Execution | High |
-| `CreateProcessA/W` (mshta) | T1059.005 | Visual Basic | Execution | High |
-| `CreateProcessA/W` (wscript/cscript) | T1059.005 | Visual Basic | Execution | High |
-| `CreateProcessA/W` (rundll32) | T1059.007 | JavaScript | Execution | Medium |
-| `ShellExecuteA/W` | T1106 | Native API | Execution | Medium |
-| `WinExec` | T1106 | Native API | Execution | Medium |
-| `VirtualAllocEx` | T1055.012 | Process Hollowing | Defense Evasion | Medium |
-| `WriteProcessMemory` | T1055 | Process Injection | Defense Evasion | Low |
-| `CreateRemoteThread` | T1055.001 | Dynamic-link Library Injection | Defense Evasion | High |
-| `NtCreateThreadEx` | T1055.001 | Dynamic-link Library Injection | Defense Evasion | High |
-| `SetThreadContext` | T1055.012 | Process Hollowing | Defense Evasion | High |
-| `ResumeThread` (suspended process) | T1055.012 | Process Hollowing | Defense Evasion | High |
-| `NtUnmapViewOfSection` | T1055.012 | Process Hollowing | Defense Evasion | High |
-| `RegOpenKeyExA/W` (Run) | T1547.001 | Registry Run Keys | Persistence | High |
-| `RegOpenKeyExA/W` (RunOnce) | T1547.001 | Registry Run Keys | Persistence | High |
-| `RegSetValueExA/W` (Run) | T1547.001 | Registry Run Keys | Persistence | High |
-| `RegCreateKeyExA/W` | T1547.001 | Registry Run Keys | Persistence | Medium |
-| `RegQueryValueExA/W` | T1012 | Query Registry | Discovery | Medium |
-| `CreateServiceA/W` | T1543.003 | Windows Service | Persistence | High |
-| `StartServiceA/W` | T1543.003 | Windows Service | Persistence | Medium |
-| `OpenServiceA/W` | T1543.003 | Windows Service | Persistence | Low |
-| `InternetOpenA/W` | T1071.001 | Web Protocols | Command & Control | Medium |
-| `InternetConnectA/W` | T1071.001 | Web Protocols | Command & Control | High |
-| `HttpOpenRequestA/W` | T1071.001 | Web Protocols | Command & Control | High |
-| `socket` | T1071 | Application Layer Protocol | Command & Control | Low |
-| `connect` | T1071 | Application Layer Protocol | Command & Control | Medium |
-| `CryptEncrypt` | T1486 | Data Encrypted for Impact | Impact | Low |
-| `CryptDecrypt` | T1486 | Data Encrypted for Impact | Impact | Low |
-| `AdjustTokenPrivileges` | T1134 | Access Token Manipulation | Defense Evasion | Medium |
-| `OpenProcessToken` | T1134 | Access Token Manipulation | Defense Evasion | Low |
-| `LookupPrivilegeValueA/W` | T1134 | Access Token Manipulation | Defense Evasion | Low |
-| `LoadLibraryA/W` | T1055.001 | Dynamic-link Library Injection | Defense Evasion | Low |
-| `GetProcAddress` | T1055.001 | Dynamic-link Library Injection | Defense Evasion | Low |
-| `CreateMutexA/W` | T1012 | Query Registry | Discovery | Low |
-| `CreateFileA/W` (remote path) | T1083 | File and Directory Discovery | Discovery | Medium |
-| `DeleteFileA/W` | T1070.004 | File Deletion | Defense Evasion | Medium |
-| `NtCreateFile` | T1106 | Native API | Execution | Low |
-| `NtOpenKey` | T1012 | Query Registry | Discovery | Medium |
-| `NtSetValueKey` | T1547.001 | Registry Run Keys | Persistence | High |
+**Problem:** There are no sample binaries for end-to-end testing. The README mentions "Test binaries are provided in `examples/samples/`" but the directory is empty. Windows PE analysis requires user-provided DLLs (licensing concern), but we can provide:
 
-### Linux Syscall → ATT&CK Techniques
+1. **Minimal safe ELF x86_64 binary** — a tiny program that does `exit(0)`, suitable for testing Linux analysis end-to-end
+2. **Minimal safe ELF x86 binary** — same but 32-bit
+3. **Safe ELF that triggers observable syscalls** — a program that calls `open("/etc/passwd", O_RDONLY)`, `read()`, `write()`, `socket()`, etc. so we can verify hooks are working
+4. **Minimal PE header (for Windows detection testing)** — just the MZ/PE header bytes so `is_pe()` detection works, not a functional PE
 
-| Syscall | Technique ID | Technique Name | Tactic | Confidence Base |
-|---------|--------------|----------------|--------|-----------------|
-| `execve` (bash) | T1059.004 | Unix Shell | Execution | High |
-| `execve` (sh) | T1059.004 | Unix Shell | Execution | High |
-| `execve` (python) | T1059.006 | Python | Execution | High |
-| `execve` (perl) | T1059.007 | JavaScript | Execution | Medium |
-| `execve` (ruby) | T1059.007 | JavaScript | Execution | Medium |
-| `ptrace` | T1055.008 | Ptrace System Calls | Defense Evasion | High |
-| `process_vm_writev` | T1055 | Process Injection | Defense Evasion | High |
-| `clone` (suspicious flags) | T1055 | Process Injection | Defense Evasion | Medium |
-| `open` (/etc/passwd) | T1003.008 | /etc/passwd and /etc/shadow | Credential Access | High |
-| `openat` (/etc/shadow) | T1003.008 | /etc/passwd and /etc/shadow | Credential Access | High |
-| `connect` (external IP) | T1071 | Application Layer Protocol | Command & Control | Medium |
-| `socket` | T1071 | Application Layer Protocol | Command & Control | Low |
-| `sendto` | T1071 | Application Layer Protocol | Command & Control | Medium |
-| `recvfrom` | T1071 | Application Layer Protocol | Command & Control | Medium |
-| `setuid` | T1548.001 | Setuid and Setgid | Privilege Escalation | High |
-| `setgid` | T1548.001 | Setuid and Setgid | Privilege Escalation | High |
-| `mmap` (RWX) | T1055 | Process Injection | Defense Evasion | Medium |
-| `mprotect` (RWX) | T1055 | Process Injection | Defense Evasion | Medium |
+**Fix:** Create these samples using the system's `gcc` or assembler. The "trigger" binary should be safe (no actual malicious behavior) but should exercise interesting syscall patterns.
+
+Implementation plan for safe test samples:
+- `examples/samples/hello_x8664` — minimal ELF that prints "Hello" and exits (tests basic emulation)
+- `examples/samples/minimal_x8664` — minimal ELF that just does `exit(0)` (tests shortest path)
+- `examples/samples/trigger_x8664` — safe ELF that calls open/read/write/setuid/socket (tests hook coverage)
+- `examples/samples/fake_pe_x86.exe` — minimal PE header bytes only (tests PE detection, not execution)
 
 ---
 
-## Implementation Sequence
+## Implementation Order
 
-### Phase 1: Project Scaffolding (Day 1)
+### Phase 1: Core Emulator Fixes (Critical Path)
 
-- [ ] Create project structure with `src/`, `tests/`, `data/` directories
-- [ ] Initialize `pyproject.toml` with Poetry
-- [ ] Add dependencies: `qiling`, `structlog`, `fastapi`, `uvicorn`, `sqlalchemy`, `pydantic`, `typer`, `stix2`
-- [ ] Create `.gitignore`, `.dockerignore`
-- [ ] Set up basic logging configuration
-- [ ] Create `config.py` with pydantic-settings
+These fixes are needed just to get `detonate analyze` working at all.
 
-### Phase 2: ATT&CK Data & Mapping (Day 2-3)
+1. **Fix `emulator.py`** — Update Qiling constructor to use `QL_ARCH`/`QL_OS` enums
+2. **Fix `config.py`** — Change default database path and rootfs fallback logic
+3. **Fix `linux.py`** — Rewrite syscall hooking to use `ql.os.set_syscall()` with correct callback signatures and register-based parameter reading
+4. **Update `windows.py`** — Minor: `f_param_read()` is correct for Windows, but verify it works with current Qiling API
 
-- [ ] Download enterprise-attack.json STIX data
-- [ ] Implement `mapping/stix_data.py` to load and query STIX data
-- [ ] Create `mapping/windows_map.py` with API → technique dictionary
-- [ ] Create `mapping/linux_map.py` with syscall → technique dictionary
-- [ ] Implement `mapping/engine.py` with confidence scoring logic
-- [ ] Implement `mapping/patterns.py` for multi-call pattern detection
-- [ ] Write unit tests for mapping engine
+### Phase 2: Safe Test Samples
 
-### Phase 3: Core Emulator (Day 4-5)
+5. **Create safe ELF test binaries** — Build using `gcc` or assembler
+6. **Create a mock PE header** for detection testing
+7. **Add end-to-end test script** that analyzes the test samples and verifies output
 
-- [ ] Implement `core/emulator.py` with `DetonateEmulator` class
-- [ ] Add platform/architecture auto-detection
-- [ ] Implement Qiling initialization and configuration
-- [ ] Add timeout enforcement mechanism
-- [ ] Implement exception handling and partial result preservation
-- [ ] Create `core/session.py` for session management
-- [ ] Write integration tests with test binaries
+### Phase 3: Quality & Deployment Fixes
 
-### Phase 4: Hook Definitions (Day 6-8)
+8. **Fix `navigator.py`** — Replace `datetime.utcnow()` with `datetime.now(timezone.utc)`
+9. **Fix Dockerfile** — Generate `poetry.lock`, handle empty rootfs, fix healthcheck
+10. **Fix `docker-compose.yml`** — Fix healthcheck command
+11. **Populate rootfs** — Add script or documentation for setting up Linux rootfs
 
-- [ ] Implement `core/hooks/windows.py` with Windows API hooks
-- [ ] Implement `core/hooks/linux.py` with Linux syscall hooks
-- [ ] Add parameter inspection logic for context-aware mapping
-- [ ] Integrate hooks with structlog for JSON event emission
-- [ ] Test hooks with known malware samples (or benign test binaries)
+### Phase 4: Verification
 
-### Phase 5: Output Generators (Day 9-11)
-
-- [ ] Configure `output/json_log.py` with structlog
-- [ ] Implement `output/navigator.py` for Navigator layer generation
-- [ ] Implement `output/stix.py` for STIX 2.1 bundle generation
-- [ ] Implement `output/report.py` for Markdown report generation
-- [ ] Test all output formats with sample analysis runs
-
-### Phase 6: Database Layer (Day 12-13)
-
-- [ ] Create `db/models.py` with SQLAlchemy ORM models
-- [ ] Implement `db/store.py` with CRUD operations
-- [ ] Create `db/init_db.py` for database initialization
-- [ ] Add migration support (alembic or custom)
-- [ ] Write database tests
-
-### Phase 7: CLI Interface (Day 14-15)
-
-- [ ] Implement `cli.py` with typer-based commands
-- [ ] Add `analyze`, `serve`, `list`, `show`, `export` commands
-- [ ] Implement progress bars and status output
-- [ ] Add verbose/quiet logging modes
-- [ ] Test CLI with various sample types
-
-### Phase 8: REST API (Day 16-18)
-
-- [ ] Create `api/app.py` with FastAPI app factory
-- [ ] Implement `api/routes.py` with all endpoints
-- [ ] Create `api/models.py` with Pydantic models
-- [ ] Add `api/middleware.py` for request logging and error handling
-- [ ] Implement file upload handling
-- [ ] Add background task support for async analysis
-- [ ] Write API tests with TestClient
-
-### Phase 9: Docker Configuration (Day 19-20)
-
-- [ ] Create multi-stage `Dockerfile`
-- [ ] Create `docker-compose.yml` for API mode
-- [ ] Create `docker-compose.cli.yml` for CLI mode
-- [ ] Create `docker/entrypoint.sh` script
-- [ ] Test Docker builds and container execution
-- [ ] Document DLL acquisition and mounting process
-
-### Phase 10: Testing & Integration (Day 21-23)
-
-- [ ] Write comprehensive unit tests for all components
-- [ ] Create integration tests with real binaries
-- [ ] Test end-to-end analysis workflow
-- [ ] Test all output formats
-- [ ] Performance testing and optimization
-- [ ] Security testing (container isolation, resource limits)
-
-### Phase 11: Documentation (Day 24-25)
-
-- [ ] Write comprehensive README.md
-- [ ] Create API documentation (OpenAPI/Swagger)
-- [ ] Document CLI usage with examples
-- [ ] Create Docker deployment guide
-- [ ] Document ATT&CK mapping methodology
-- [ ] Add troubleshooting guide
-
-### Phase 12: Polish & Release (Day 26-28)
-
-- [ ] Code review and refactoring
-- [ ] Final performance optimization
-- [ ] Create example outputs in `examples/outputs/`
-- [ ] Tag v0.1.0 release
-- [ ] Publish to GitHub
-- [ ] Create Docker Hub image
+12. **Run full test suite** — `pytest` must pass (199 tests)
+13. **End-to-end CLI test** — `detonate analyze` with safe samples produces all 4 output formats
+14. **End-to-end API test** — `detonate serve` starts and responds to health check
 
 ---
 
-## Testing Strategy
+## Detailed Fix Specifications
 
-### Unit Tests
+### Fix 1: `src/detonate/core/emulator.py`
 
-- **Mapping Engine**: Test API → technique mapping with various inputs
-- **Confidence Scoring**: Verify scoring logic for different scenarios
-- **Pattern Detection**: Test multi-call pattern recognition
-- **Output Generators**: Validate JSON structure and content
-- **Database Operations**: Test CRUD operations in isolation
+```python
+# Replace the arch_map and Qiling() call in _run_emulation():
 
-### Integration Tests
+# OLD:
+arch_map = {
+    "x86": "x86",
+    "x86_64": "x8664",
+    "arm": "arm",
+    "arm64": "arm64",
+}
+ql_arch = arch_map.get(self.architecture, "x86")
+# ...
+profile = "windows" if self.platform == "windows" else "linux"
+ql = Qiling(
+    argv=[str(self.sample_path)],
+    rootfs=str(self.rootfs_path),
+    archname=ql_arch,
+    ostype=profile,
+    console=False,
+)
 
-- **Emulator**: Run known binaries and verify hook capture
-- **API Hooks**: Test Windows API hooks with PE executables
-- **Syscall Hooks**: Test Linux syscall hooks with ELF binaries
-- **End-to-End**: Full analysis pipeline from submission to output
+# NEW:
+from qiling.const import QL_ARCH, QL_OS
 
-### Test Binaries
+arch_map = {
+    "x86": QL_ARCH.X86,
+    "x86_64": QL_ARCH.X8664,
+    "arm": QL_ARCH.ARM,
+    "arm64": QL_ARCH.ARM64,
+}
+ql_arch = arch_map.get(self.architecture, QL_ARCH.X8664)
 
-Use benign test binaries for testing:
-- `examples/rootfs/x86_linux/bin/x86_hello` (Qiling-provided)
-- `examples/rootfs/x86_windows/bin/x86_hello.exe` (Qiling-provided)
-- Custom test programs that call specific APIs (CreateProcess, RegSetValue, etc.)
+os_map = {
+    "windows": QL_OS.WINDOWS,
+    "linux": QL_OS.LINUX,
+}
+ql_os = os_map.get(self.platform, QL_OS.LINUX)
 
-### API Tests
-
-- Test all REST endpoints with TestClient
-- Test file upload and download
-- Test pagination and filtering
-- Test error handling and validation
-
-### Docker Tests
-
-- Verify container starts and health check passes
-- Test CLI mode with sample analysis
-- Test API mode with sample submission
-- Verify resource limits and isolation
-
----
-
-## Security Considerations
-
-### Container Isolation
-
-- **No network**: Default network mode is `none` or internal-only
-- **Read-only filesystem**: Root filesystem is read-only except tmpfs mounts
-- **Non-root user**: Container runs as `detonate` user (UID 1000)
-- **Dropped capabilities**: All capabilities dropped (`cap_drop: ALL`)
-- **Resource limits**: CPU, memory, and PID limits enforced
-- **Seccomp/AppArmor**: Optional additional confinement profiles
-
-### Sample Handling
-
-- **Read-only mounts**: Samples mounted as read-only
-- **Hash tracking**: All samples tracked by SHA256 hash
-- **No storage in image**: Samples never stored in container image
-- **Automatic cleanup**: Containers removed after execution (`--rm`)
-
-### Emulation Safety
-
-- **Qiling isolation**: Malware runs in emulated environment, not natively
-- **Timeout enforcement**: Analysis terminated after timeout period
-- **Exception handling**: Crashes contained within emulator
-- **No native execution**: Binary never executes on host system
-
-### API Security
-
-- **Authentication**: Optional API key authentication (future enhancement)
-- **Rate limiting**: Request rate limiting to prevent abuse
-- **Input validation**: All inputs validated and sanitized
-- **File type checking**: Verify uploaded files are valid binaries
-
-### Data Protection
-
-- **Database encryption**: Optional database encryption at rest
-- **Log sanitization**: Sensitive data removed from logs
-- **Access control**: Role-based access control for API (future)
-
----
-
-## Dependencies
-
-### Python Dependencies (pyproject.toml)
-
-```toml
-[tool.poetry]
-name = "detonate"
-version = "0.1.0"
-description = "Malware analysis platform with ATT&CK mapping"
-authors = ["Your Name <you@example.com>"]
-
-[tool.poetry.dependencies]
-python = "^3.10"
-qiling = "^1.4"
-structlog = "^24"
-fastapi = "^0.115"
-uvicorn = {extras = ["standard"], version = "^0.32"}
-sqlalchemy = "^2.0"
-pydantic = "^2.0"
-pydantic-settings = "^2.0"
-typer = {extras = ["all"], version = "^0.12"}
-stix2 = "^3.0"
-python-multipart = "^0.0"
-aiofiles = "^24.0"
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.0"
-pytest-asyncio = "^0.23"
-httpx = "^0.27"  # For TestClient
-black = "^24.0"
-ruff = "^0.6"
-mypy = "^1.0"
-
-[tool.poetry.scripts]
-detonate = "detonate.cli:app"
+ql = Qiling(
+    argv=[str(self.sample_path)],
+    rootfs=str(self.rootfs_path),
+    archtype=ql_arch,
+    ostype=ql_os,
+    console=False,
+)
 ```
 
-### System Dependencies (Docker)
+Also update `get_rootfs_path()` in `config.py` and the path resolution logic to default to `/` for Linux when no explicit rootfs is given and the configured path doesn't exist or is empty.
 
-- `build-essential`: For keystone-engine compilation
-- `cmake`: Build system for native dependencies
-- `git`: For cloning submodules
-- `libffi-dev`: For cffi bindings
+### Fix 2: `src/detonate/config.py`
+
+```python
+# Change default database path from /var/lib/detonate/detonate.db to ./data/detonate.db
+database: str = "./data/detonate.db"
+
+# Update get_rootfs_path() to fall back to system rootfs for Linux:
+def get_rootfs_path(self, platform: str, arch: str) -> Path:
+    path = Path(self.rootfs) / platform_map.get(platform, "x86_linux")
+    # For Linux, fall back to system rootfs if custom rootfs is empty/missing
+    if platform == "linux" and not _is_valid_rootfs(path):
+        return Path("/")  # Use host filesystem as rootfs
+    return path
+
+def _is_valid_rootfs(path: Path) -> bool:
+    """Check if the rootfs path contains the minimum required files."""
+    if not path.exists():
+        return False
+    # Check for dynamic linker presence
+    ld_paths = [
+        path / "lib64" / "ld-linux-x86-64.so.2",
+        path / "lib" / "ld-linux.so.2",
+    ]
+    return any(p.exists() for p in ld_paths)
+```
+
+### Fix 3: `src/detonate/core/hooks/linux.py`
+
+Major rewrite needed. The `install()` method must use `ql.os.set_syscall()` with the correct callback signatures. Hook callbacks receive just `(ql)` and read parameters from registers via `ql.reg.read()` or `ql.os.get_syscall_arg()`.
+
+Key changes:
+- Replace `ql.hook_intno()` + `ql.hook_syscall()` with `ql.os.set_syscall(name, handler)`
+- Change all hook callbacks from `(ql, intno)` to `(ql)`
+- Replace `ql.os.f_param_read(n)` (Windows-specific) with `ql.reg.read()` or `ql.os.get_syscall_arg(n)` for Linux
+- Use `ql.mem.string(addr)` for reading string arguments from memory
+- For return value capture, either use `QL_INTERCEPT.EXIT` or check `ql.reg.read("rax")` after the syscall
+
+### Fix 4: `src/detonate/output/navigator.py`
+
+Replace all `datetime.utcnow()` with `datetime.now(timezone.utc)`. Also update test file `tests/test_navigator.py` correspondingly.
+
+### Fix 5: Test Samples
+
+Create using system compiler:
+
+```bash
+# hello_x8664 — minimal ELF that exits(0)
+cat > /tmp/hello.S << 'EOF'
+.global _start
+_start:
+    mov $60, %rax    # sys_exit
+    xor %rdi, %rdi   # exit code 0
+    syscall
+EOF
+as -o hello_x8664.o hello_x8664.S && ld -o hello_x8664 hello_x8664.o
+
+# trigger_x8664 — safe ELF that exercises interesting syscalls
+# (open /etc/passwd for reading, read, write to stdout, socket, setuid)
+# This should be a simple C program compiled statically
+```
+
+### Fix 6: Dockerfile Updates
+
+- Remove `COPY poetry.lock` line or make it conditional
+- Add step to populate Linux rootfs from container filesystem
+- Fix healthcheck to use `curl` instead of `python requests`
+- Add `poetry.lock` generation step
+
+### Fix 7: docker-compose.yml Healthcheck
+
+```yaml
+# Replace:
+test: ["CMD", "python", "-c", "import requests; requests.get('http://127.0.0.1:8000/api/v1/health')"]
+# With:
+test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/v1/health"]
+```
 
 ---
 
-## Future Enhancements
+## Verification Checklist
 
-### Phase 2+ Features
+After all fixes are applied:
 
-- [ ] **Symbolic Execution**: Integrate with angr for path exploration
-- [ ] **Fuzzing**: AFL-based fuzzing via unicornafl
-- [ ] **YARA Integration**: YARA rule scanning on samples
-- [ ] **Network Simulation**: FakeNet-NG integration for network emulation
-- [ ] **Multi-sample Analysis**: Correlate behavior across multiple samples
-- [ ] **Machine Learning**: ML-based classification of behavior patterns
-- [ ] **Threat Intelligence**: Auto-enrichment with VirusTotal, MalwareBazaar APIs
-- [ ] **Distributed Analysis**: Scale across multiple containers/nodes
-- [ ] **Web UI**: React-based dashboard for analysis management
-- [ ] **Plugin System**: Extensible hook and output format plugins
-
-### ATT&CK Mapping Improvements
-
-- [ ] **Sub-technique refinement**: More granular sub-technique mapping
-- [ ] **Confidence calibration**: Improve confidence scoring accuracy
-- [ ] **Context enrichment**: Use file paths, registry keys, network indicators for better mapping
-- [ ] **Tactic inference**: Infer tactics from technique sequences
-- [ ] **MITRE D3FEND**: Map defensive techniques to observed behavior
-
----
-
-## References
-
-- **Qiling Framework**: https://github.com/qilingframework/qiling
-- **Qiling Documentation**: https://docs.qiling.io
-- **MITRE ATT&CK**: https://attack.mitre.org
-- **ATT&CK STIX Data**: https://github.com/mitre-attack/attack-stix-data
-- **ATT&CK Navigator**: https://github.com/mitre-attack/attack-navigator
-- **STIX 2.1 Specification**: https://docs.oasis-open.org/cti/stix/v2.1/stix-v2.1-part1-stix-core.html
-- **structlog**: https://www.structlog.org
-- **FastAPI**: https://fastapi.tiangolo.com
-- **CAPE Sandbox**: https://github.com/kevoreilly/CAPEv2
-
----
-
-## Notes
-
-- Windows DLLs must be provided by the user due to licensing restrictions
-- Qiling's Windows emulation requires DLLs from the target Windows version
-- Linux rootfs can be bundled in the Docker image (no licensing issues)
-- ATT&CK STIX data is ~15MB and should be bundled for offline use
-- Default timeout of 60 seconds is sufficient for most malware samples
-- SQLite is sufficient for single-instance deployments; consider PostgreSQL for multi-user setups
+- [ ] `pytest` passes (199+ tests)
+- [ ] `detonate analyze /bin/ls --platform linux --arch x86_64` completes without error
+- [ ] `detonate analyze /bin/true --platform linux --arch x86_64 --format all` produces all 4 output files
+- [ ] `detonate serve` starts without error
+- [ ] `curl http://localhost:8000/health` returns healthy status
+- [ ] `detonate db init` creates database
+- [ ] `detonate list-analyses` shows results
+- [ ] `detonate export <session_id> --format report` produces markdown
+- [ ] `detonate export <session_id> --format navigator` produces valid Navigator JSON
+- [ ] `detonate export <session_id> --format stix` produces valid STIX bundle
+- [ ] `detonate export <session_id> --format log` produces valid JSONL
+- [ ] Safe test samples in `examples/samples/` work end-to-end
+- [ ] `docker build -t detonate:latest .` succeeds
