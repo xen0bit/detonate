@@ -4,7 +4,7 @@
 FROM python:3.12-slim AS builder
 
 # Install system dependencies
-# libc6-dev and libc6-i386 provide the dynamic linkers and libraries needed for rootfs
+# libc6-dev and libc6-i386 provide the dynamic linkers and libc needed for rootfs
 # curl is needed to download ATT&CK STIX data
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -16,25 +16,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
 # Set working directory
 WORKDIR /build
 
-# Install Poetry
-RUN pip install --no-cache-dir poetry
-
 # Copy project files needed for dependency installation
-COPY pyproject.toml poetry.lock README.md ./
+COPY pyproject.toml uv.lock README.md ./
 
-# Install dependencies with Poetry
-# Configure Poetry to create virtualenv in the project directory
-RUN poetry config virtualenvs.in-project true
-RUN poetry install --no-root --only main --no-interaction
+# Install dependencies with uv
+RUN uv sync --frozen --no-install-project --no-dev
 
 # Copy source code
 COPY src/ ./src/
 
-# Install the detonate package itself into the Poetry venv (non-editable for portability)
-RUN /build/.venv/bin/pip install --no-cache-dir .
+# Install the detonate package itself
+RUN uv sync --frozen --no-dev
 
 # Download ATT&CK STIX data
 RUN mkdir -p data/attack_stix && \
@@ -49,7 +47,7 @@ RUN mkdir -p data/rootfs/x86_linux/lib data/rootfs/x8664_linux/lib64 data/rootfs
     # x86_64 rootfs: copy dynamic linker and essential libraries
     cp /lib64/ld-linux-x86-64.so.2 data/rootfs/x8664_linux/lib64/ && \
     cp -r /lib/x86_64-linux-gnu data/rootfs/x8664_linux/lib/ && \
-    # x86 rootfs: copy 32-bit dynamic linker (may be in /lib32 on some systems)
+    # x86 rootfs: copy 32-bit dynamic linker (may be in /lib or /lib32 on some systems)
     ( [ -f /lib/ld-linux.so.2 ] && cp /lib/ld-linux.so.2 data/rootfs/x86_linux/lib/ ) || \
     ( [ -f /lib32/ld-linux.so.2 ] && cp /lib32/ld-linux.so.2 data/rootfs/x86_linux/lib/ ) || \
     true && \
@@ -85,13 +83,15 @@ RUN groupadd --gid 1000 detonate && \
 # Set working directory
 WORKDIR /app
 
-# Copy installed packages from builder
+# Copy installed packages and project from builder
 COPY --from=builder /build/.venv /app/.venv
 COPY --from=builder /build/src /app/src
 COPY --from=builder /build/data /app/data
 
-# Fix shebang paths in venv scripts to point to /app/.venv instead of /build/.venv
-RUN find /app/.venv/bin -type f -exec sed -i 's|/build/.venv|/app/.venv|g' {} \;
+# Fix shebang paths in venv scripts and .pth files to point to /app/.venv instead of /build/.venv
+RUN find /app/.venv/bin -type f -exec sed -i 's|/build/.venv|/app/.venv|g' {} \; && \
+    find /app/.venv/lib -name "*.pth" -exec sed -i 's|/build/.venv|/app/.venv|g' {} \; && \
+    find /app/.venv -name "_editable_impl_*.pth" -exec sed -i 's|/build/src|/app/src|g' {} \;
 
 # Copy entrypoint script
 COPY docker/entrypoint.sh /entrypoint.sh

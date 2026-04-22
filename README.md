@@ -45,14 +45,14 @@ docker run --rm -v $(pwd)/samples:/samples:ro -v $(pwd)/output:/output \
 ### Local Development Install
 
 ```bash
-# Install dependencies with Poetry
-poetry install
+# Install dependencies with uv
+uv sync
 
 # Run tests
-poetry run pytest
+uv run pytest
 
 # Analyze a sample
-poetry run detonate analyze path/to/sample --output ./results
+uv run detonate analyze path/to/sample --output ./results
 ```
 
 ## Usage

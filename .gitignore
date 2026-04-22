@@ -59,6 +59,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# uv
+.uv/
+
 # IDE
 .idea/
 .vscode/
@@ -79,7 +82,17 @@ dmypy.json
 *.sqlite
 *.sqlite3
 output/
-samples/
 dlls/
 data/db/
 __version__.py
+
+# Test samples - ignore binaries, track source
+examples/samples/*.bin
+examples/samples/*.elf
+examples/samples/*.exe
+examples/samples/minimal_x86
+examples/samples/minimal_x86_64
+examples/samples/minimal_x8664
+examples/samples/trigger_x86_64
+examples/samples/trigger_x8664
+examples/samples/data/
