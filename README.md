@@ -372,3 +372,16 @@ MIT License — see LICENSE file.
 - [MITRE ATT&CK](https://attack.mitre.org)
 - [ATT&CK Navigator](https://github.com/mitre-attack/attack-navigator)
 - [STIX 2.1 Specification](https://docs.oasis-open.org/cti/stix/v2.1/stix-v2.1-part1-stix-core.html)
+
+---
+
+## Web UI
+
+TODO: Prior implementation completed all Web UI pages (Dashboard, Submit, Analyses List, Analysis Detail, ATT&CK Navigator) but omitted documentation in README. Add a new "Web UI" section covering:
+- Access instructions (http://localhost:8000/ after docker-compose up)
+- Page descriptions (Dashboard stats, Submit form with drag-drop, Analyses list with filters/pagination, Detail view with 4 tabs, Navigator full matrix)
+- Technical stack (PicoCSS v2, Chart.js, marked.js, vanilla JS only - no frameworks)
+- Theme toggle (light/dark mode with localStorage persistence)
+- Polling behavior (5-second intervals for running analyses, 10-minute max)
+- Browser compatibility (Chrome, Firefox, Safari, Edge)
+- Vendored dependencies location (web/js/, web/css/)

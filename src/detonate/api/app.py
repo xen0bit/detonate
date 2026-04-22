@@ -58,6 +58,36 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     # Include routes
     app.include_router(router, prefix="/api/v1")
 
+    # Mount static files for web UI
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # Correct path: api/ → detonate/ → src/ → project root (3 levels up)
+    # This file is at: src/detonate/api/app.py
+    # Project root is 3 parent directories up
+    current_file = Path(__file__).resolve()
+    project_root = current_file.parent.parent.parent
+    web_dir = project_root / "web"
+
+    # Log warning if web directory doesn't exist (aids debugging)
+    if not web_dir.exists():
+        logger.warning(f"Web directory not found at {web_dir}. Static files will not be served.")
+    else:
+        # Mount static files - use explicit str() conversion for compatibility
+        app.mount("/web", StaticFiles(directory=str(web_dir)), name="web")
+        logger.info(f"Mounted static files from {web_dir}")
+
+    # Root redirect to web UI
+    @app.get("/")
+    async def root_redirect():
+        index_html = web_dir / "index.html"
+        if index_html.exists():
+            return FileResponse(str(index_html))
+        return {"message": "Detonate API", "web_ui": "/web/index.html"}
+
     # Health check endpoint
     @app.get("/health")
     async def health_check():

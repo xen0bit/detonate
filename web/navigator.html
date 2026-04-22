@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ATT&CK Navigator - Detonate</title>
+  <link rel="stylesheet" href="/web/css/pico.min.css">
+  <link rel="stylesheet" href="/web/css/custom.css">
+  <style>
+    /* Navigator-specific styles */
+    .navigator-container {
+      overflow-x: auto;
+      padding: 1rem 0;
+    }
+    
+    .navigator-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      min-width: 1200px;
+    }
+    
+    .navigator-tactic {
+      background: var(--card-background-color);
+      border-radius: var(--border-radius);
+      padding: 1rem;
+      min-width: 200px;
+    }
+    
+    .navigator-tactic h3 {
+      font-size: 0.875rem;
+      text-transform: uppercase;
+      color: var(--muted-color);
+      border-bottom: 2px solid var(--primary);
+      padding-bottom: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    
+    .navigator-technique {
+      padding: 0.6rem;
+      margin: 0.25rem 0;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.15s;
+      border-left: 3px solid transparent;
+    }
+    
+    .navigator-technique:hover {
+      transform: translateX(4px);
+      filter: brightness(1.1);
+    }
+    
+    .navigator-technique.high {
+      background: var(--technique-high);
+      border-left-color: #d32f2f;
+    }
+    
+    .navigator-technique.medium {
+      background: var(--technique-medium);
+      border-left-color: #ff6600;
+    }
+    
+    .navigator-technique.low {
+      background: var(--technique-low);
+      border-left-color: #ffaa00;
+    }
+    
+    .navigator-technique .tech-id {
+      font-weight: bold;
+      display: block;
+    }
+    
+    .navigator-technique .tech-name {
+      font-size: 0.75rem;
+      color: var(--muted-color);
+      display: block;
+      margin-top: 0.25rem;
+    }
+    
+    .navigator-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    
+    .navigator-controls {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    
+    .legend {
+      display: flex;
+      gap: 1rem;
+      margin: 1rem 0;
+      flex-wrap: wrap;
+    }
+    
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+    }
+    
+    .legend-color {
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+    }
+    
+    .legend-color.high { background: var(--technique-high); border: 1px solid #d32f2f; }
+    .legend-color.medium { background: var(--technique-medium); border: 1px solid #ff6600; }
+    .legend-color.low { background: var(--technique-low); border: 1px solid #ffaa00; }
+  </style>
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="navbar">
+    <div class="brand">
+      <strong>🔬 Detonate</strong>
+    </div>
+    <div class="nav-links">
+      <a href="/web/index.html">Dashboard</a>
+      <a href="/web/analyses.html">Analyses</a>
+      <a href="/web/submit.html">Submit</a>
+      <button id="theme-toggle" onclick="toggleTheme()">🌙 Dark</button>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="container">
+    <header>
+      <div class="navigator-header">
+        <div>
+          <h1>ATT&CK Navigator</h1>
+          <p id="navigator-subtitle" style="color: var(--muted-color);">Loading analysis...</p>
+        </div>
+        <div class="navigator-controls">
+          <button class="btn btn-outline" onclick="exportLayer()" aria-label="Export ATT&CK layer as JSON">
+            📥 Export Layer
+          </button>
+          <a id="back-to-analysis" class="btn btn-outline" href="/web/analyses.html">
+            ← Back to Analyses
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <!-- Error State Container (hidden by default, shown on API errors) -->
+    <div id="navigator-error" class="error-container" style="display: none; margin: 1rem 0;"></div>
+
+    <!-- Search/Filter -->
+    <section>
+      <div class="filter-form">
+        <div class="form-group" style="flex: 1; min-width: 200px;">
+          <label for="navigator-search">Search Techniques</label>
+          <input type="text" id="navigator-search" placeholder="Search by ID, name, or tactic...">
+        </div>
+        <div class="form-group">
+          <label for="navigator-confidence">Min Confidence</label>
+          <select id="navigator-confidence">
+            <option value="0">All</option>
+            <option value="0.7">High (70%+)</option>
+            <option value="0.4">Medium+ (40%+)</option>
+            <option value="0.1">Low+ (10%+)</option>
+          </select>
+        </div>
+        <div class="form-group" style="justify-content: flex-end;">
+          <button class="btn" onclick="applyFilters()" style="background: var(--primary);">
+            Apply Filters
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Legend -->
+    <section>
+      <div class="legend">
+        <div class="legend-item">
+          <div class="legend-color high"></div>
+          <span>High Confidence (70%+)</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color medium"></div>
+          <span>Medium Confidence (40-69%)</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color low"></div>
+          <span>Low Confidence (&lt;40%)</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Matrix -->
+    <section class="navigator-container">
+      <div class="navigator-grid" id="navigator-grid">
+        <p class="empty-state" style="grid-column: 1 / -1;">Loading ATT&CK matrix...</p>
+      </div>
+    </section>
+
+    <!-- Statistics -->
+    <section style="margin-top: 2rem;">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <h3>Total Techniques</h3>
+          <p id="stat-total-techs">-</p>
+        </div>
+        <div class="stat-card">
+          <h3>High Confidence</h3>
+          <p id="stat-high">-</p>
+        </div>
+        <div class="stat-card">
+          <h3>Medium Confidence</h3>
+          <p id="stat-medium">-</p>
+        </div>
+        <div class="stat-card">
+          <h3>Low Confidence</h3>
+          <p id="stat-low">-</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Technique Modal -->
+    <div class="modal" id="technique-modal" role="dialog" aria-modal="true" aria-labelledby="modal-technique-id">
+      <div class="modal-content technique-modal">
+        <h3 id="modal-technique-id">-</h3>
+        <p id="modal-technique-name" style="color: var(--muted-color); margin-bottom: 1rem;">-</p>
+        
+        <div style="display: grid; grid-template-columns: 100px 1fr; gap: 0.5rem; font-size: 0.875rem; margin-bottom: 1rem;">
+          <span style="color: var(--muted-color);">Tactic:</span>
+          <span id="modal-tactic">-</span>
+          
+          <span style="color: var(--muted-color);">Confidence:</span>
+          <span id="modal-confidence"><span class="badge">-</span></span>
+          
+          <span style="color: var(--muted-color);">Evidence Count:</span>
+          <span id="modal-evidence-count">-</span>
+          
+          <span style="color: var(--muted-color);">First Seen:</span>
+          <span id="modal-first-seen">-</span>
+          
+          <span style="color: var(--muted-color);">Last Seen:</span>
+          <span id="modal-last-seen">-</span>
+        </div>
+
+        <h4>API Evidence</h4>
+        <ul class="evidence-list" id="modal-evidence">
+          <li>Loading...</li>
+        </ul>
+
+        <div style="margin-top: 1.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <a id="modal-attack-link" href="#" target="_blank" class="btn btn-outline" style="font-size: 0.75rem;">
+            View on MITRE ATT&CK
+          </a>
+          <button id="modal-close-btn" class="btn btn-outline" onclick="closeTechniqueModal()" style="font-size: 0.75rem;" aria-label="Close technique details modal">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer style="text-align: center; padding: 2rem; color: var(--muted-color);">
+    <p>Detonate Malware Analysis Platform</p>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="/web/js/app.js"></script>
+  <script src="/web/js/navigator.js"></script>
+</body>
+</html>

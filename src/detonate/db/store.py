@@ -1,13 +1,18 @@
 """Database CRUD operations."""
 
+import logging
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from .models import Analysis, Finding, APICall, String
+
+logger = logging.getLogger(__name__)
 
 
 VALID_STATUSES = {"pending", "running", "completed", "failed"}
@@ -406,3 +411,60 @@ class DatabaseStore:
                 per_page=limit,
                 pages=pages,
             )
+
+    def delete_analysis(self, session_id: str) -> bool:
+        """
+        Delete an analysis and all related data.
+
+        Uses bulk DELETE statements to avoid OOM risk with large analyses.
+        Deletes related records first (findings, api_calls, strings), then the analysis.
+        All operations are in a single transaction with proper rollback on failure.
+
+        Args:
+            session_id: Analysis session UUID
+
+        Returns:
+            True if deleted, False if not found or on error
+        """
+        try:
+            with Session(self.engine) as session:
+                # Get the analysis to verify it exists and get its ID
+                stmt = select(Analysis).where(Analysis.session_id == session_id)
+                analysis = session.scalar(stmt)
+
+                if analysis is None:
+                    logger.debug(f"Analysis {session_id} not found for deletion")
+                    return False
+
+                analysis_id = analysis.id
+                deleted_counts = {}
+
+                # Bulk delete related records using analysis_id subquery
+                # This is a single query per table, no N+1 issues
+                for model, name in [(Finding, "findings"), (APICall, "api_calls"), (String, "strings")]:
+                    del_stmt = delete(model).where(model.analysis_id == analysis_id)
+                    result = session.execute(del_stmt)
+                    deleted_counts[name] = result.rowcount
+
+                # Delete the analysis record itself
+                del_stmt = delete(Analysis).where(Analysis.id == analysis_id)
+                result = session.execute(del_stmt)
+                deleted_counts["analysis"] = result.rowcount
+
+                session.commit()
+
+                logger.info(
+                    f"Deleted analysis {session_id}: "
+                    f"{deleted_counts['findings']} findings, "
+                    f"{deleted_counts['api_calls']} API calls, "
+                    f"{deleted_counts['strings']} strings, "
+                    f"{deleted_counts['analysis']} analysis record"
+                )
+                return True
+
+        except IntegrityError as e:
+            logger.error(f"Integrity error deleting analysis {session_id}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error deleting analysis {session_id}: {e}")
+            return False

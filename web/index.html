@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard - Detonate</title>
+  <link rel="stylesheet" href="/web/css/pico.min.css">
+  <link rel="stylesheet" href="/web/css/custom.css">
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="navbar">
+    <div class="brand">
+      <strong>🔬 Detonate</strong>
+    </div>
+    <div class="nav-links">
+      <a href="/web/index.html" class="active">Dashboard</a>
+      <a href="/web/analyses.html">Analyses</a>
+      <a href="/web/submit.html">Submit</a>
+      <button id="theme-toggle" onclick="toggleTheme()">🌙 Dark</button>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="container">
+    <header>
+      <h1>Dashboard</h1>
+      <p>System overview and recent activity</p>
+    </header>
+
+    <!-- Statistics Cards -->
+    <div class="stats-grid" id="stats-grid">
+      <div class="stat-card">
+        <h3>Total Analyses</h3>
+        <p id="stat-total">-</p>
+      </div>
+      <div class="stat-card">
+        <h3>Completed</h3>
+        <p id="stat-completed">-</p>
+      </div>
+      <div class="stat-card">
+        <h3>Running</h3>
+        <p id="stat-running">-</p>
+      </div>
+      <div class="stat-card">
+        <h3>Failed</h3>
+        <p id="stat-failed">-</p>
+      </div>
+    </div>
+
+    <!-- Activity Chart -->
+    <section>
+      <h2>Activity (Last 30 Days)</h2>
+      <canvas id="activity-chart" height="100"></canvas>
+    </section>
+
+    <!-- Recent Analyses -->
+    <section>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2>Recent Analyses</h2>
+        <a href="/web/analyses.html" class="btn btn-outline">View All</a>
+      </div>
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th>Session ID</th>
+              <th>Filename</th>
+              <th>Platform</th>
+              <th>Status</th>
+              <th>Techniques</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody id="recent-analyses">
+            <tr>
+              <td colspan="6" class="empty-state">Loading...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Quick Actions -->
+    <section style="margin-top: 2rem;">
+      <a href="/web/submit.html" class="btn" style="background: var(--primary);">
+        Submit New Analysis
+      </a>
+    </section>
+  </main>
+
+  <footer style="text-align: center; padding: 2rem; color: var(--muted-color);">
+    <p>Detonate Malware Analysis Platform</p>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="/web/js/chart.min.js"></script>
+  <script src="/web/js/app.js"></script>
+  <script src="/web/js/dashboard.js"></script>
+</body>
+</html>

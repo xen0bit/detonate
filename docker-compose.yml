@@ -17,6 +17,8 @@ services:
       - /tmp:noexec,nosuid,size=512m
       - /dev/shm:noexec,nosuid,size=256m
     volumes:
+      # Web UI (read-only)
+      - ./web:/app/web:ro
       # Windows DLLs (user-provided)
       - ./dlls/x86:/opt/rootfs/x86_windows/dlls:ro
       - ./dlls/x86_64:/opt/rootfs/x8664_windows/dlls:ro

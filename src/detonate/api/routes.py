@@ -444,20 +444,155 @@ async def get_json_log(session_id: str, request: Request):
     )
 
 
+@router.get("/analyses/{session_id}/api_calls")
+async def get_api_calls(
+    session_id: str,
+    request: Request,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=50, ge=1, le=100, description="Items per page"),
+    api_name: str | None = Query(default=None, description="Filter by API name"),
+    technique_id: str | None = Query(default=None, description="Filter by technique ID"),
+):
+    """Get paginated API calls for an analysis."""
+    db: DatabaseStore = get_db(request)
+
+    # Validate pagination
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    if per_page > 100:
+        raise HTTPException(status_code=400, detail="per_page must be <= 100")
+
+    # Get analysis
+    analysis = db.get_analysis(session_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    # Build query
+    with Session(db.engine) as session:
+        from sqlalchemy import select, func
+        from ..db.models import APICall
+
+        stmt = select(APICall).where(APICall.analysis_id == analysis.id)
+
+        # Apply filters
+        if api_name:
+            stmt = stmt.where(APICall.api_name.ilike(f"%{api_name}%"))
+        if technique_id:
+            stmt = stmt.where(APICall.technique_id == technique_id)
+
+        # Get total count
+        count_stmt = select(func.count()).select_from(APICall).where(APICall.analysis_id == analysis.id)
+        if api_name:
+            count_stmt = count_stmt.where(APICall.api_name.ilike(f"%{api_name}%"))
+        if technique_id:
+            count_stmt = count_stmt.where(APICall.technique_id == technique_id)
+        total = session.scalar(count_stmt) or 0
+
+        # Get paginated results
+        offset = (page - 1) * per_page
+        stmt = stmt.order_by(APICall.sequence_number.asc())
+        stmt = stmt.offset(offset).limit(per_page)
+        api_calls = list(session.scalars(stmt))
+
+    # Calculate pagination
+    pages = (total + per_page - 1) // per_page if per_page > 0 else 1
+
+    return {
+        "items": [
+            {
+                "sequence_number": call.sequence_number,
+                "timestamp": call.timestamp.isoformat() if call.timestamp else None,
+                "api_name": call.api_name,
+                "syscall_name": call.syscall_name,
+                "params_json": call.params_json,
+                "return_value": call.return_value,
+                "technique_id": call.technique_id,
+                "confidence": call.confidence,
+            }
+            for call in api_calls
+        ],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": pages,
+    }
+
+
+@router.get("/analyses/{session_id}/findings")
+async def get_findings(
+    session_id: str,
+    request: Request,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=20, ge=1, le=100, description="Items per page"),
+):
+    """Get paginated ATT&CK findings for an analysis."""
+    db: DatabaseStore = get_db(request)
+
+    # Validate pagination
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    if per_page > 100:
+        raise HTTPException(status_code=400, detail="per_page must be <= 100")
+
+    # Get analysis
+    analysis = db.get_analysis(session_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    # Build query
+    with Session(db.engine) as session:
+        from sqlalchemy import select, func
+        from ..db.models import Finding
+
+        stmt = select(Finding).where(Finding.analysis_id == analysis.id)
+
+        # Get total count
+        count_stmt = select(func.count()).select_from(Finding).where(Finding.analysis_id == analysis.id)
+        total = session.scalar(count_stmt) or 0
+
+        # Get paginated results
+        offset = (page - 1) * per_page
+        stmt = stmt.order_by(Finding.confidence_score.desc(), Finding.technique_id.asc())
+        stmt = stmt.offset(offset).limit(per_page)
+        findings = list(session.scalars(stmt))
+
+    # Calculate pagination
+    pages = (total + per_page - 1) // per_page if per_page > 0 else 1
+
+    return {
+        "items": [
+            {
+                "technique_id": f.technique_id,
+                "technique_name": f.technique_name,
+                "tactic": f.tactic,
+                "confidence": f.confidence,
+                "confidence_score": f.confidence_score,
+                "evidence_count": f.evidence_count,
+                "first_seen": f.first_seen.isoformat() if f.first_seen else None,
+                "last_seen": f.last_seen.isoformat() if f.last_seen else None,
+            }
+            for f in findings
+        ],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": pages,
+    }
+
+
 @router.delete("/reports/{session_id}")
 async def delete_report(session_id: str, request: Request):
     """Delete an analysis and its data."""
     db: DatabaseStore = get_db(request)
 
-    # Check if exists in database
-    db_analysis = db.get_analysis(session_id)
-    
+    # Delete from database
+    deleted = db.delete_analysis(session_id)
+
     # Remove from in-memory tracking if present
     if session_id in _tasks:
         del _tasks[session_id]
 
-    # Note: In production, would also delete from database
-    # db.delete_analysis(session_id)
-
-    # Return success even if not found (idempotent delete)
-    return {"status": "deleted", "session_id": session_id}
+    if deleted:
+        return {"status": "deleted", "session_id": session_id}
+    else:
+        raise HTTPException(status_code=404, detail="Analysis not found")

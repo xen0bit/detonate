@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Analyses - Detonate</title>
+  <link rel="stylesheet" href="/web/css/pico.min.css">
+  <link rel="stylesheet" href="/web/css/custom.css">
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="navbar">
+    <div class="brand">
+      <strong>🔬 Detonate</strong>
+    </div>
+    <div class="nav-links">
+      <a href="/web/index.html">Dashboard</a>
+      <a href="/web/analyses.html" class="active">Analyses</a>
+      <a href="/web/submit.html">Submit</a>
+      <button id="theme-toggle" onclick="toggleTheme()">🌙 Dark</button>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="container">
+    <header>
+      <h1>Analyses</h1>
+      <p>Browse and manage all analyses</p>
+    </header>
+
+    <!-- Filter Form -->
+    <section>
+      <form class="filter-form" id="filter-form">
+        <div class="form-group">
+          <label for="filter-status">Status</label>
+          <select name="status" id="filter-status">
+            <option value="">All</option>
+            <option value="pending">Pending</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="filter-platform">Platform</label>
+          <select name="platform" id="filter-platform">
+            <option value="">All</option>
+            <option value="windows">Windows</option>
+            <option value="linux">Linux</option>
+            <option value="macos">macOS</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="filter-search">Search</label>
+          <input type="text" name="search" id="filter-search" placeholder="Filename or hash...">
+        </div>
+
+        <div class="form-group" style="justify-content: flex-end;">
+          <button type="submit" class="btn" style="background: var(--primary);">Apply Filters</button>
+          <button type="button" class="btn btn-outline" id="clear-filters">Clear</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Bulk Actions -->
+    <section id="bulk-actions" style="display: none; margin-bottom: 1rem;">
+      <article>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <p style="margin: 0;"><span id="selected-count">0</span> analyses selected</p>
+          <div>
+            <button class="btn btn-outline" id="bulk-delete" style="color: #d32f2f; border-color: #d32f2f;">
+              Delete Selected
+            </button>
+            <button class="btn btn-outline" id="bulk-cancel">Cancel</button>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <!-- Results Table -->
+    <section>
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 40px;">
+                <input type="checkbox" id="select-all" title="Select all">
+              </th>
+              <th>Session ID</th>
+              <th>Filename</th>
+              <th>SHA256</th>
+              <th>Platform</th>
+              <th>Status</th>
+              <th>Techniques</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="analyses-table">
+            <tr>
+              <td colspan="9" class="empty-state">Loading...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Pagination -->
+      <div class="pagination" id="pagination" style="display: none;">
+        <button class="btn btn-outline" id="prev-page" disabled>← Prev</button>
+        <span class="page-info" id="page-info">Page 1 of 1</span>
+        <button class="btn btn-outline" id="next-page" disabled>Next →</button>
+      </div>
+    </section>
+  </main>
+
+  <footer style="text-align: center; padding: 2rem; color: var(--muted-color);">
+    <p>Detonate Malware Analysis Platform</p>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="/web/js/app.js"></script>
+  <script src="/web/js/analyses.js"></script>
+</body>
+</html>

@@ -122,10 +122,21 @@ class TestDeleteReport:
 
     def test_delete_report(self, client):
         """Test deleting a report."""
-        session_id = "00000000-0000-0000-0000-000000000000"
+        # First create an analysis
+        from src.detonate.db.store import DatabaseStore
+        db = client.app.state.db
+        from uuid import uuid4
+        session_id = str(uuid4())
+        db.create_analysis(session_id, "test.exe", "sha256hash", 1024, "windows", "x86_64")
+        
+        # Now delete it
         response = client.delete(f"/api/v1/reports/{session_id}")
         assert response.status_code == 200
         assert response.json()["status"] == "deleted"
+        
+        # Verify it's gone
+        response = client.get(f"/api/v1/analyze/{session_id}")
+        assert response.status_code == 404
 
 
 class TestMiddleware:

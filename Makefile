@@ -1,7 +1,7 @@
 # Detonate Makefile
 # Common workflows for development, testing, and deployment
 
-.PHONY: help install dev clean test test-cov lint typecheck build docker-build docker-run analyze samples samples-clean docker-test
+.PHONY: help install dev clean test test-cov lint typecheck build docker-build docker-run analyze samples samples-clean docker-test web-dev web-download-deps web-lint web-build test-web
 
 # Default target
 help:
@@ -145,3 +145,25 @@ lock:
 # Update dependencies
 update:
 	uv lock --upgrade
+
+# Web UI development
+web-dev:
+	@echo "Starting web development..."
+	@echo "Open http://localhost:8000/web/ in your browser"
+
+web-download-deps:
+	@echo "Downloading web dependencies..."
+	@mkdir -p web/js web/css
+	@curl -L https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css -o web/css/pico.min.css
+	@curl -L https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js -o web/js/chart.min.js
+	@curl -L https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js -o web/js/marked.min.js
+	@echo "Dependencies downloaded to web/js/ and web/css/"
+
+web-lint:
+	@echo "Web UI linting not configured (vanilla JS)"
+
+web-build:
+	@echo "Web UI build not required (static HTML)"
+
+test-web:
+	@echo "Web UI tests not configured"
