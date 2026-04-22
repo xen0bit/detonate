@@ -1,417 +1,1053 @@
-# Detonate — Comprehensive Fix Plan
+# Detonate Web UI Implementation Plan
 
-## Project Overview
+## Overview
 
-**detonate** is a Docker-based malware analysis platform that uses Qiling emulation to observe binary behavior and map it to MITRE ATT&CK techniques. It produces four output formats (ATT&CK Navigator layers, STIX 2.1 bundles, Markdown reports, and structured JSON logs) through both a CLI and a REST API.
-
-The project has a well-structured codebase with 32 source files, comprehensive tests (199 passing), and a Docker deployment setup. However, it cannot actually build, run, or function end-to-end due to several critical issues.
-
----
-
-## Issue Inventory
-
-### Issue 1: Qiling Constructor API Mismatch (Critical)
-
-**File:** `src/detonate/core/emulator.py:166-181`
-
-**Problem:** The `_run_emulation()` method passes `archname=` and `ostype=` as strings to `Qiling()`, but the installed Qiling (v1.4+) uses different parameter names and enum types:
-
-```python
-# Current (broken):
-ql = Qiling(
-    argv=[str(self.sample_path)],
-    rootfs=str(self.rootfs_path),
-    archname=ql_arch,     # Wrong parameter name
-    ostype=profile,         # Wrong parameter name and type
-    console=False,
-)
-```
-
-**Correct API:**
-```python
-from qiling.const import QL_ARCH, QL_OS
-
-ql = Qiling(
-    argv=[str(self.sample_path)],
-    rootfs=str(self.rootfs_path),
-    archtype=QL_ARCH.X8664,  # Enum, not string
-    ostype=QL_OS.LINUX,       # Enum, not string
-    console=False,
-)
-```
-
-**Verified:** `Qiling(argv=['/bin/true'], rootfs='/', archtype=QL_ARCH.X8664, ostype=QL_OS.LINUX, console=False)` works correctly.
-
-**Fix:**
-- Add `from qiling.const import QL_ARCH, QL_OS` to emulator.py
-- Replace `arch_map` dict with proper enum mapping
-- Change `archname=` to `archtype=` and `ostype=` to use `QL_OS` enum
-- Pass `console=False` to suppress Qiling's default stdout output
+Build a simple, minimal Web UI for the Detonate malware analysis platform using:
+- **Runtime:** Bun (for dev tasks, static file serving via FastAPI)
+- **Styling:** PicoCSS v2 (vendored locally) with light/dark mode toggle
+- **Interactivity:** Vanilla JavaScript only (no frameworks)
+- **Deployment:** FastAPI serves static files from `/web` directory
+- **Updates:** Polling every 5 seconds for running analyses
+- **Charts:** Chart.js (vendored locally)
+- **Markdown:** marked.js (vendored locally) for report preview
 
 ---
 
-### Issue 2: Empty Rootfs Directories (Critical)
+## Technical Decisions
 
-**Files:** `data/rootfs/x86_linux/`, `data/rootfs/x8664_linux/`
-
-**Problem:** Both rootfs directories are empty. Qiling requires a rootfs with at minimum the dynamic linker (`ld-linux-*`) and libc to emulate dynamically-linked binaries. When empty rootfs paths are passed, Qiling fails with:
-
-```
-FileNotFoundError: [Errno 2] No such file or directory: '.../lib64/ld-linux-x86-64.so.2'
-```
-
-**Fix:**
-- For **local development** on Linux, default the rootfs to `/` (the system root) when no custom rootfs is specified. This allows analyzing local Linux binaries without needing a separate rootfs.
-- For **Docker deployment**, the rootfs should be populated either by downloading Qiling's default rootfs or by copying the minimal required files from the container's filesystem.
-- Update `config.py` `get_rootfs_path()` to return `/` for Linux when the configured rootfs directory is empty or doesn't contain the expected structure.
-- Add a `--rootfs` default that falls back intelligently: if `/` is a valid Linux root (has `/lib64/ld-linux-x86-64.so.2` or `/lib/ld-linux.so.2`), use it; otherwise require explicit `--rootfs`.
-
----
-
-### Issue 3: Default Database Path Permission Error (High)
-
-**File:** `src/detonate/config.py:18`
-
-**Problem:** Default database path `/var/lib/detonate/detonate.db` requires root permissions. Running `detonate analyze` locally fails with:
-
-```
-PermissionError: [Errno 13] Permission denied: '/var/lib/detonate'
-```
-
-**Fix:**
-- Change default `database` setting from `/var/lib/detonate/detonate.db` to `./data/detonate.db` (relative to current directory)
-- Keep the Docker/deployment default as `/var/lib/detonate/detonate.db` via the `DETONATE_DATABASE` environment variable (which docker-compose.yml already sets)
-- Update `init_database()` to create parent directories (it already does `path.parent.mkdir(parents=True, exist_ok=True)`)
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| **Framework** | Vanilla JS + PicoCSS | Minimal, simple, easy to maintain |
+| **Deployment** | FastAPI serves static files | Single container, no extra ports |
+| **Authentication** | None | Internal tool, not needed yet |
+| **Theme** | PicoCSS light/dark mode | Built-in, simple toggle |
+| **Charts** | Chart.js (local) | Lightweight, simple API |
+| **Markdown** | marked.js (local) | ~6KB, full MD support |
+| **Client Hashes** | SHA256 only (Web Crypto) | Native, secure, MD5 not in Web Crypto |
+| **API Pagination** | Server-side for API calls | Handle 1000+ calls efficiently |
+| **Error Pages** | PicoCSS defaults | No custom error pages needed |
+| **Primary Color** | `#d32f2f` (red) | Malware analysis theme |
 
 ---
 
-### Issue 4: Linux Syscall Hooking API Incorrect (Critical)
+## File Structure
 
-**File:** `src/detonate/core/hooks/linux.py` — `install()` method (~line 100)
-
-**Problem:** The `install()` method uses two incorrect Qiling APIs:
-
-```python
-# Current (broken):
-for syscall_num, hook_func in self.hooks.items():
-    try:
-        self.ql.hook_intno(hook_func, syscall_num)        # Wrong: this hooks int 0x80, not syscall instruction
-        self.ql.hook_syscall(self._capture_return_value, syscall_num)  # Wrong: hook_syscall doesn't exist on ql
-    except Exception as e:
-        log.debug("hook_install_failed", syscall=syscall_num, error=str(e))
 ```
-
-**Issues:**
-1. `ql.hook_intno(callback, intno)` hooks software interrupts (int 0x80), NOT the `syscall` instruction used by x86_64 Linux. This means none of the Linux syscall hooks actually fire.
-2. `ql.hook_syscall` does not exist as a method on `Qiling` — it exists on `ql.os` as `ql.os.hook_syscall()`, but that's also not the correct way to hook individual syscalls by name/number.
-
-**Correct API (verified):**
-```python
-# Use ql.os.set_syscall() for hooking individual syscalls by name or number:
-# ql.os.set_syscall(target, handler, intercept=QL_INTERCEPT.CALL)
-# target: syscall name (str) or number (int)
-# handler: callback function receiving the ql instance
+detonate/
+├── src/detonate/
+│   ├── api/
+│   │   ├── app.py              # MODIFY: add static files mount
+│   │   ├── routes.py           # MODIFY: add pagination endpoints
+│   │   └── web_routes.py       # NEW: HTML route handlers (optional)
+│   └── db/
+│       └── store.py            # MODIFY: add delete_analysis method
+├── web/                         # NEW: Static web UI
+│   ├── index.html              # Dashboard (entry point)
+│   ├── submit.html             # Submit analysis form
+│   ├── analyses.html           # List all analyses with filters
+│   ├── analysis.html           # Detail view with tabs
+│   ├── navigator.html          # Full ATT&CK matrix view
+│   ├── css/
+│   │   ├── pico.min.css        # Vendored PicoCSS (~25KB)
+│   │   └── custom.css          # Custom styles (matrix, badges)
+│   └── js/
+│       ├── chart.min.js        # Vendored Chart.js (~60KB)
+│       ├── marked.min.js       # Vendored marked.js (~6KB)
+│       ├── app.js              # Main application logic
+│       ├── dashboard.js        # Dashboard-specific code
+│       ├── analysis.js         # Analysis detail + tabs + polling
+│       ├── analyses.js         # List filtering + pagination
+│       ├── submit.js           # Form handling + hash computation
+│       └── navigator.js        # Matrix visualization
+├── docker-compose.yml          # MODIFY: add web volume
+├── Makefile                    # MODIFY: add web dev commands
+└── task.md                     # THIS FILE
 ```
-
-The `set_syscall` method is inherited from `QlOsPosix` and works for both Linux and other POSIX OSes. It supports:
-- `QL_INTERCEPT.CALL` — replace the syscall implementation entirely
-- `QL_INTERCEPT.ENTER` — run handler before the syscall
-- `QL_INTERCEPT.EXIT` — run handler after the syscall (for return value capture)
-
-**Fix:**
-- Replace `install()` to use `self.ql.os.set_syscall(name_or_number, handler)` for each syscall
-- Use syscall names (strings) where possible: `"execve"`, `"openat"`, etc. — these are more portable than numbers
-- For return value capture, use `QL_INTERCEPT.EXIT` or wrap handlers to read return values after the call
-- Remove the `_capture_return_value` method that relies on the non-existent `ql.hook_syscall`
-- The Linux hook handler methods (e.g., `hook_sys_execve`) need to be updated to match Qiling's expected callback signature: `def handler(ql)` — they currently receive `(ql, intno)` which is the `hook_intno` signature
-
-**Additional issue with hook callbacks:** The current Linux hooks are written with the wrong signature. They expect `(ql, intno)` from `hook_intno`, but `set_syscall` handlers receive just `(ql)`. The hooks also read parameters using `ql.os.f_param_read()` which is a Windows/PE-specific API — Linux syscalls read parameters from registers (e.g., `ql.os.f_param_read()` doesn't exist for Linux). Linux syscalls pass arguments in registers:
-- x86_64: rdi, rsi, rdx, r10, r8, r9
-- Access via: `ql.reg.read(ql.reg.read("rdi"))` or `ql.os.get_syscall_arg(0)`, etc.
-
-This is a significant rewrite of `linux.py`. The correct approach for reading syscall parameters on Linux is:
-
-```python
-# For x86_64 Linux:
-arg0 = ql.os.get_syscall_arg(0)  # rdi
-arg1 = ql.os.get_syscall_arg(1)  # rsi
-# etc.
-
-# Or directly via registers:
-arg0 = ql.reg.read("rdi")
-```
-
-And for reading strings from memory (e.g., filename for open/openat):
-```python
-filename = ql.mem.string(arg0)
-```
-
-**This means the entire `linux.py` hook implementation needs to be rewritten to use the correct register-based parameter reading instead of `ql.os.f_param_read()` which is Windows-only.**
 
 ---
 
-### Issue 5: Deprecated `datetime.utcnow()` (Medium)
+## Backend Changes (Phase 1)
 
-**File:** `src/detonate/output/navigator.py:120`
+### 1. Add Static Files Mount (`src/detonate/api/app.py`)
 
-**Problem:** Uses `datetime.utcnow()` which is deprecated in Python 3.12+ (13 deprecation warnings in tests).
+**Location:** After router setup in `create_app()`
 
 ```python
-# Current:
-analysis_date = datetime.utcnow()
-```
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
-**Fix:**
-```python
-from datetime import timezone
-analysis_date = datetime.now(timezone.utc)
-```
+# Mount static files
+app.mount("/web", StaticFiles(directory="web"), name="web")
 
-Also update test files that use `datetime.utcnow()` in `tests/test_navigator.py`.
+# Root redirect
+@app.get("/")
+async def root_redirect():
+    return FileResponse("web/index.html")
+```
 
 ---
 
-### Issue 6: Docker Build Failures (Medium)
+### 2. Implement Delete Endpoint (`src/detonate/api/routes.py`)
 
-**File:** `Dockerfile`
+**Current:** No-op delete  
+**Required:** Actual database deletion
 
-**Problems:**
-1. `COPY data/rootfs/x86_linux/ ./data/rootfs/x86_linux/` — these directories are empty, Docker `COPY` of empty directories fails or creates no content
-2. `COPY pyproject.toml poetry.lock ./` — `poetry.lock` doesn't exist, causing `COPY` to fail
-3. `RUN poetry install --no-root --only main` — will fail without `poetry.lock`
-4. Healthcheck uses `python -c "import requests; ..."` but `requests` is not a dependency
+**Step 1:** Add to `DatabaseStore` (`src/detonate/db/store.py`):
 
-**Fix:**
-- Generate `poetry.lock` by running `poetry lock` locally and commit it
-- For rootfs: either download Qiling's rootfs during Docker build, or copy from the container's own filesystem
-- For the healthcheck, use `curl` (which is already installed) or `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"`
-- Add a step to download ATT&CK STIX data (currently curl's from GitHub, which is fine)
+```python
+def delete_analysis(self, session_id: str) -> bool:
+    """
+    Delete an analysis and all related data.
+    
+    Args:
+        session_id: Analysis session UUID
+    
+    Returns:
+        True if deleted, False if not found
+    """
+    with Session(self.engine) as session:
+        stmt = select(Analysis).where(Analysis.session_id == session_id)
+        analysis = session.scalar(stmt)
+        
+        if analysis is None:
+            return False
+        
+        # Delete related records (cascade should handle this, but be explicit)
+        for finding in analysis.findings:
+            session.delete(finding)
+        for api_call in analysis.api_calls:
+            session.delete(api_call)
+        for string in analysis.strings:
+            session.delete(string)
+        
+        session.delete(analysis)
+        session.commit()
+        return True
+```
+
+**Step 2:** Update route handler:
+
+```python
+@router.delete("/reports/{session_id}")
+async def delete_report(session_id: str, request: Request):
+    """Delete an analysis and its data."""
+    db: DatabaseStore = get_db(request)
+    
+    # Delete from database
+    deleted = db.delete_analysis(session_id)
+    
+    # Remove from memory
+    if session_id in _tasks:
+        del _tasks[session_id]
+    
+    if deleted:
+        return {"status": "deleted", "session_id": session_id}
+    else:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+```
 
 ---
 
-### Issue 7: Docker Compose Healthcheck (Medium)
+### 3. Add Paginated API Calls Endpoint (`src/detonate/api/routes.py`)
 
-**File:** `docker-compose.yml:47`
+```python
+@router.get("/analyses/{session_id}/api_calls")
+async def get_api_calls(
+    session_id: str,
+    request: Request,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=50, ge=1, le=100, description="Items per page"),
+    api_name: str | None = Query(default=None, description="Filter by API name"),
+    technique_id: str | None = Query(default=None, description="Filter by technique ID"),
+):
+    """Get paginated API calls for an analysis."""
+    db: DatabaseStore = get_db(request)
+    
+    # Validate pagination
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    if per_page > 100:
+        raise HTTPException(status_code=400, detail="per_page must be <= 100")
+    
+    # Get analysis
+    analysis = db.get_analysis(session_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    
+    # Build query
+    with Session(db.engine) as session:
+        from sqlalchemy import select, func
+        from ..db.models import APICall
+        
+        stmt = select(APICall).where(APICall.analysis_id == analysis.id)
+        
+        # Apply filters
+        if api_name:
+            stmt = stmt.where(APICall.api_name.ilike(f"%{api_name}%"))
+        if technique_id:
+            stmt = stmt.where(APICall.technique_id == technique_id)
+        
+        # Get total count
+        count_stmt = select(func.count()).select_from(APICall).where(APICall.analysis_id == analysis.id)
+        if api_name:
+            count_stmt = count_stmt.where(APICall.api_name.ilike(f"%{api_name}%"))
+        if technique_id:
+            count_stmt = count_stmt.where(APICall.technique_id == technique_id)
+        total = session.scalar(count_stmt) or 0
+        
+        # Get paginated results
+        offset = (page - 1) * per_page
+        stmt = stmt.order_by(APICall.sequence_number.asc())
+        stmt = stmt.offset(offset).limit(per_page)
+        api_calls = list(session.scalars(stmt))
+    
+    # Calculate pagination
+    pages = (total + per_page - 1) // per_page if per_page > 0 else 1
+    
+    return {
+        "items": [
+            {
+                "sequence_number": call.sequence_number,
+                "timestamp": call.timestamp.isoformat() if call.timestamp else None,
+                "api_name": call.api_name,
+                "syscall_name": call.syscall_name,
+                "params_json": call.params_json,
+                "return_value": call.return_value,
+                "technique_id": call.technique_id,
+                "confidence": call.confidence,
+            }
+            for call in api_calls
+        ],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": pages,
+    }
+```
 
-**Problem:** Healthcheck uses Python `requests` library which is not a project dependency:
+---
+
+### 4. Add Paginated Findings Endpoint (`src/detonate/api/routes.py`)
+
+```python
+@router.get("/analyses/{session_id}/findings")
+async def get_findings(
+    session_id: str,
+    request: Request,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=20, ge=1, le=100, description="Items per page"),
+):
+    """Get paginated ATT&CK findings for an analysis."""
+    db: DatabaseStore = get_db(request)
+    
+    # Validate pagination
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    if per_page > 100:
+        raise HTTPException(status_code=400, detail="per_page must be <= 100")
+    
+    # Get analysis
+    analysis = db.get_analysis(session_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    
+    # Build query
+    with Session(db.engine) as session:
+        from sqlalchemy import select, func
+        from ..db.models import Finding
+        
+        stmt = select(Finding).where(Finding.analysis_id == analysis.id)
+        
+        # Get total count
+        count_stmt = select(func.count()).select_from(Finding).where(Finding.analysis_id == analysis.id)
+        total = session.scalar(count_stmt) or 0
+        
+        # Get paginated results
+        offset = (page - 1) * per_page
+        stmt = stmt.order_by(Finding.confidence_score.desc(), Finding.technique_id.asc())
+        stmt = stmt.offset(offset).limit(per_page)
+        findings = list(session.scalars(stmt))
+    
+    # Calculate pagination
+    pages = (total + per_page - 1) // per_page if per_page > 0 else 1
+    
+    return {
+        "items": [
+            {
+                "technique_id": f.technique_id,
+                "technique_name": f.technique_name,
+                "tactic": f.tactic,
+                "confidence": f.confidence,
+                "confidence_score": f.confidence_score,
+                "evidence_count": f.evidence_count,
+                "first_seen": f.first_seen.isoformat() if f.first_seen else None,
+                "last_seen": f.last_seen.isoformat() if f.last_seen else None,
+            }
+            for f in findings
+        ],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": pages,
+    }
+```
+
+---
+
+### 5. Update Docker Compose (`docker-compose.yml`)
+
+Add web volume mount to the `volumes` section:
 
 ```yaml
-test: ["CMD", "python", "-c", "import requests; requests.get('http://127.0.0.1:8000/api/v1/health')"]
-```
-
-**Fix:** Use `curl` (already installed in the Docker image):
-
-```yaml
-test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/v1/health"]
-```
-
-Or use Python's built-in `urllib`:
-
-```yaml
-test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"]
+volumes:
+  - ./web:/app/web:ro              # NEW: Mount web UI (read-only)
+  - ./dlls/x86:/opt/rootfs/x86_windows/dlls:ro
+  - ./dlls/x86_64:/opt/rootfs/x8664_windows/dlls:ro
+  - ./samples:/samples:ro
+  - ./output:/output:rw
+  - ./data/db:/var/lib/detonate:rw
 ```
 
 ---
 
-### Issue 8: No Safe Test Samples (High)
+### 6. Update Makefile
 
-**Directory:** `examples/samples/` (empty)
+Add web development commands:
 
-**Problem:** There are no sample binaries for end-to-end testing. The README mentions "Test binaries are provided in `examples/samples/`" but the directory is empty. Windows PE analysis requires user-provided DLLs (licensing concern), but we can provide:
+```makefile
+# Web UI development
+web-dev:
+	@echo "Starting web development..."
+	@echo "Open http://localhost:8000/web/ in your browser"
 
-1. **Minimal safe ELF x86_64 binary** — a tiny program that does `exit(0)`, suitable for testing Linux analysis end-to-end
-2. **Minimal safe ELF x86 binary** — same but 32-bit
-3. **Safe ELF that triggers observable syscalls** — a program that calls `open("/etc/passwd", O_RDONLY)`, `read()`, `write()`, `socket()`, etc. so we can verify hooks are working
-4. **Minimal PE header (for Windows detection testing)** — just the MZ/PE header bytes so `is_pe()` detection works, not a functional PE
+web-download-deps:
+	@echo "Downloading web dependencies..."
+	@mkdir -p web/js web/css
+	@curl -L https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css -o web/css/pico.min.css
+	@curl -L https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js -o web/js/chart.min.js
+	@curl -L https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js -o web/js/marked.min.js
+	@echo "Dependencies downloaded to web/js/ and web/css/"
 
-**Fix:** Create these samples using the system's `gcc` or assembler. The "trigger" binary should be safe (no actual malicious behavior) but should exercise interesting syscall patterns.
+web-lint:
+	@echo "Web UI linting not configured (vanilla JS)"
 
-Implementation plan for safe test samples:
-- `examples/samples/hello_x8664` — minimal ELF that prints "Hello" and exits (tests basic emulation)
-- `examples/samples/minimal_x8664` — minimal ELF that just does `exit(0)` (tests shortest path)
-- `examples/samples/trigger_x8664` — safe ELF that calls open/read/write/setuid/socket (tests hook coverage)
-- `examples/samples/fake_pe_x86.exe` — minimal PE header bytes only (tests PE detection, not execution)
+web-build:
+	@echo "Web UI build not required (static HTML)"
+
+test-web:
+	@echo "Web UI tests not configured"
+```
 
 ---
 
-## Implementation Order
+## Web UI Pages (Phase 2)
 
-### Phase 1: Core Emulator Fixes (Critical Path)
+### Page 1: Dashboard (`web/index.html`)
 
-These fixes are needed just to get `detonate analyze` working at all.
+**Purpose:** System overview and quick access
 
-1. **Fix `emulator.py`** — Update Qiling constructor to use `QL_ARCH`/`QL_OS` enums
-2. **Fix `config.py`** — Change default database path and rootfs fallback logic
-3. **Fix `linux.py`** — Rewrite syscall hooking to use `ql.os.set_syscall()` with correct callback signatures and register-based parameter reading
-4. **Update `windows.py`** — Minor: `f_param_read()` is correct for Windows, but verify it works with current Qiling API
+**Components:**
+- Header with navigation (Dashboard, Analyses, Submit, theme toggle)
+- Statistics cards grid (4 cards)
+- Recent analyses table (last 10)
+- Activity chart (Chart.js, last 30 days)
+- Quick action button
 
-### Phase 2: Safe Test Samples
+**JavaScript Functions:**
+- `loadDashboardStats()` - Fetch and render statistics
+- `loadRecentAnalyses()` - Populate recent table
+- `renderActivityChart()` - Draw Chart.js graph
+- `formatRelativeTime()` - Human-readable timestamps
+- `toggleTheme()` - Light/dark mode switch
 
-5. **Create safe ELF test binaries** — Build using `gcc` or assembler
-6. **Create a mock PE header** for detection testing
-7. **Add end-to-end test script** that analyzes the test samples and verifies output
-
-### Phase 3: Quality & Deployment Fixes
-
-8. **Fix `navigator.py`** — Replace `datetime.utcnow()` with `datetime.now(timezone.utc)`
-9. **Fix Dockerfile** — Generate `poetry.lock`, handle empty rootfs, fix healthcheck
-10. **Fix `docker-compose.yml`** — Fix healthcheck command
-11. **Populate rootfs** — Add script or documentation for setting up Linux rootfs
-
-### Phase 4: Verification
-
-12. **Run full test suite** — `pytest` must pass (199 tests)
-13. **End-to-end CLI test** — `detonate analyze` with safe samples produces all 4 output formats
-14. **End-to-end API test** — `detonate serve` starts and responds to health check
+**API Calls:**
+- `GET /api/v1/reports?per_page=10` - Recent analyses
+- `GET /api/v1/reports?status=completed` - For statistics
+- `GET /health` - System health check
 
 ---
 
-## Detailed Fix Specifications
+### Page 2: Submit Analysis (`web/submit.html`)
 
-### Fix 1: `src/detonate/core/emulator.py`
+**Purpose:** Upload and configure new analysis
 
-```python
-# Replace the arch_map and Qiling() call in _run_emulation():
+**Components:**
+- File upload zone (drag-and-drop + click)
+- File info display (name, size, SHA256)
+- Configuration form (platform, arch, timeout)
+- Submit button with loading state
+- Progress indicator
+- Auto-redirect on success
 
-# OLD:
-arch_map = {
-    "x86": "x86",
-    "x86_64": "x8664",
-    "arm": "arm",
-    "arm64": "arm64",
-}
-ql_arch = arch_map.get(self.architecture, "x86")
-# ...
-profile = "windows" if self.platform == "windows" else "linux"
-ql = Qiling(
-    argv=[str(self.sample_path)],
-    rootfs=str(self.rootfs_path),
-    archname=ql_arch,
-    ostype=profile,
-    console=False,
-)
+**JavaScript Functions:**
+- `handleFileSelect()` - Show file info after selection
+- `computeFileHash()` - SHA256 via Web Crypto API
+- `submitAnalysis()` - POST with progress tracking
+- `handleSubmissionSuccess()` - Redirect to detail
+- `handleSubmissionError()` - Show error message
 
-# NEW:
-from qiling.const import QL_ARCH, QL_OS
+**API Calls:**
+- `POST /api/v1/analyze` - Multipart form submission
 
-arch_map = {
-    "x86": QL_ARCH.X86,
-    "x86_64": QL_ARCH.X8664,
-    "arm": QL_ARCH.ARM,
-    "arm64": QL_ARCH.ARM64,
-}
-ql_arch = arch_map.get(self.architecture, QL_ARCH.X8664)
+---
 
-os_map = {
-    "windows": QL_OS.WINDOWS,
-    "linux": QL_OS.LINUX,
-}
-ql_os = os_map.get(self.platform, QL_OS.LINUX)
+### Page 3: Analyses List (`web/analyses.html`)
 
-ql = Qiling(
-    argv=[str(self.sample_path)],
-    rootfs=str(self.rootfs_path),
-    archtype=ql_arch,
-    ostype=ql_os,
-    console=False,
-)
+**Purpose:** Browse, filter, and manage all analyses
+
+**Components:**
+- Filter form (status, platform, search)
+- Results table (8 columns)
+- Pagination controls
+- Bulk actions (delete selected)
+
+**JavaScript Functions:**
+- `loadAnalyses()` - Fetch with current filters
+- `applyFilters()` - Update URL params and reload
+- `renderTable()` - Populate results
+- `renderPagination()` - Build controls
+- `deleteAnalysis()` - DELETE with confirmation
+- `copyToClipboard()` - Copy hash
+
+**API Calls:**
+- `GET /api/v1/reports?page=X&per_page=Y&status=Z&platform=P`
+- `DELETE /api/v1/reports/{sessionId}`
+
+---
+
+### Page 4: Analysis Detail (`web/analysis.html`)
+
+**Purpose:** Comprehensive results viewer with tabs
+
+**Layout:** Single page with 4 tabs
+
+**Tab 1: Overview**
+- Sample information (hashes, size, type, platform)
+- Timeline (created, started, completed, duration)
+- Status badge
+- Executive summary (techniques count, tactics pie chart)
+
+**Tab 2: ATT&CK Techniques**
+- Techniques count summary
+- Simple matrix grid (tactics as columns)
+- Technique cards (ID, name, confidence, evidence)
+- Click for details modal
+
+**Tab 3: API Calls**
+- Timeline table (sequence, timestamp, API, params, technique)
+- Filter inputs (search API name, technique ID)
+- Expandable JSON parameters
+- Export buttons (JSON, CSV)
+
+**Tab 4: Reports**
+- Download buttons (4 formats)
+- Markdown report preview (marked.js)
+- Navigator layer mini-preview
+
+**JavaScript Functions:**
+- `loadAnalysisDetail()` - Fetch analysis data
+- `switchTab()` - Tab navigation with URL hash
+- `renderTechniquesMatrix()` - Build technique grid
+- `renderAPICalls()` - Populate timeline
+- `pollAnalysisStatus()` - Poll every 5s if pending/running
+- `startPolling()` / `stopPolling()` - Manage poll loop
+- `expandJson()` - Toggle JSON visibility
+- `renderMarkdownPreview()` - Convert MD to HTML
+
+**API Calls:**
+- `GET /api/v1/analyze/{sessionId}` - Status + summary
+- `GET /api/v1/analyses/{sessionId}/api_calls?page=1` - Paginated calls
+- `GET /api/v1/analyses/{sessionId}/findings?page=1` - Paginated findings
+- `GET /api/v1/reports/{sessionId}/navigator` - Download
+- `GET /api/v1/reports/{sessionId}/report` - Download
+- `GET /api/v1/reports/{sessionId}/log` - Download
+
+**Polling Logic:**
+```javascript
+// Poll every 5 seconds if status is pending/running
+// Stop on completed/failed or after 120 attempts (10 minutes)
+// Reload page on completion to show results
 ```
 
-Also update `get_rootfs_path()` in `config.py` and the path resolution logic to default to `/` for Linux when no explicit rootfs is given and the configured path doesn't exist or is empty.
+---
 
-### Fix 2: `src/detonate/config.py`
+### Page 5: ATT&CK Navigator (`web/navigator.html`)
 
-```python
-# Change default database path from /var/lib/detonate/detonate.db to ./data/detonate.db
-database: str = "./data/detonate.db"
+**Purpose:** Full-screen interactive matrix
 
-# Update get_rootfs_path() to fall back to system rootfs for Linux:
-def get_rootfs_path(self, platform: str, arch: str) -> Path:
-    path = Path(self.rootfs) / platform_map.get(platform, "x86_linux")
-    # For Linux, fall back to system rootfs if custom rootfs is empty/missing
-    if platform == "linux" and not _is_valid_rootfs(path):
-        return Path("/")  # Use host filesystem as rootfs
-    return path
+**Components:**
+- Full ATT&CK matrix grid (all tactics, all techniques)
+- Color-coded cells (red=high, orange=medium, yellow=low)
+- Hover tooltips (technique name, confidence, evidence)
+- Click modal (full details, all API evidence)
+- Search/filter input
+- Export button
 
-def _is_valid_rootfs(path: Path) -> bool:
-    """Check if the rootfs path contains the minimum required files."""
-    if not path.exists():
-        return False
-    # Check for dynamic linker presence
-    ld_paths = [
-        path / "lib64" / "ld-linux-x86-64.so.2",
-        path / "lib" / "ld-linux.so.2",
-    ]
-    return any(p.exists() for p in ld_paths)
+**JavaScript Functions:**
+- `loadNavigatorData()` - Fetch Navigator layer JSON
+- `renderMatrix()` - Build full grid
+- `showTechniqueModal()` - Display details popup
+- `filterTechniques()` - Search/filter logic
+- `exportLayer()` - Download JSON
+
+**API Calls:**
+- `GET /api/v1/reports/{sessionId}/navigator`
+
+---
+
+## CSS Specifications (`web/css/custom.css`)
+
+```css
+/* Theme variables */
+:root {
+  --primary: #d32f2f;
+  --primary-hover: #b71c1c;
+  --technique-high: rgba(255, 0, 0, 0.15);
+  --technique-medium: rgba(255, 102, 0, 0.15);
+  --technique-low: rgba(255, 170, 0, 0.15);
+}
+
+/* Navigation */
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid var(--muted-border-color);
+}
+
+/* Stats grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin: 2rem 0;
+}
+
+.stat-card {
+  background: var(--card-background-color);
+  padding: 1.5rem;
+  border-radius: var(--border-radius);
+  text-align: center;
+}
+
+.stat-card h3 {
+  font-size: 0.875rem;
+  color: var(--muted-color);
+  margin-bottom: 0.5rem;
+}
+
+.stat-card p {
+  font-size: 2rem;
+  font-weight: bold;
+  margin: 0;
+}
+
+/* Status badges */
+.badge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.badge.pending { background: #ffe082; color: #5d4037; }
+.badge.running { background: #90caf9; color: #0d47a1; }
+.badge.completed { background: #a5d6a7; color: #1b5e20; }
+.badge.failed { background: #ef9a9a; color: #b71c1c; }
+
+/* ATT&CK matrix */
+.attack-matrix {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
+  overflow-x: auto;
+}
+
+.tactic-column {
+  background: var(--card-background-color);
+  padding: 1rem;
+  border-radius: var(--border-radius);
+  min-width: 180px;
+}
+
+.tactic-column h4 {
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  color: var(--muted-color);
+  margin-bottom: 0.75rem;
+  border-bottom: 2px solid var(--primary);
+  padding-bottom: 0.5rem;
+}
+
+.technique-item {
+  display: block;
+  padding: 0.5rem;
+  margin: 0.25rem 0;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.technique-item:hover {
+  transform: translateX(4px);
+}
+
+.technique-item.high { background: var(--technique-high); }
+.technique-item.medium { background: var(--technique-medium); }
+.technique-item.low { background: var(--technique-low); }
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 2px solid var(--muted-border-color);
+  margin-bottom: 1.5rem;
+}
+
+.tab-button {
+  padding: 0.75rem 1.5rem;
+  background: transparent;
+  border: none;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--muted-color);
+  transition: all 0.2s;
+}
+
+.tab-button:hover {
+  color: var(--primary);
+}
+
+.tab-button.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+/* JSON viewer */
+.json-viewer {
+  background: var(--card-background-color);
+  padding: 1rem;
+  border-radius: var(--border-radius);
+  font-family: monospace;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+/* Modal */
+.modal {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal.active {
+  display: flex;
+}
+
+.modal-content {
+  background: var(--card-background-color);
+  padding: 2rem;
+  border-radius: var(--border-radius);
+  max-width: 600px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+/* Utility */
+.copy-btn {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  margin-left: 0.5rem;
+}
+
+.truncate {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Dark mode adjustments */
+[data-theme="dark"] .technique-item.high { background: rgba(255, 0, 0, 0.25); }
+[data-theme="dark"] .technique-item.medium { background: rgba(255, 102, 0, 0.25); }
+[data-theme="dark"] .technique-item.low { background: rgba(255, 170, 0, 0.25); }
 ```
 
-### Fix 3: `src/detonate/core/hooks/linux.py`
+---
 
-Major rewrite needed. The `install()` method must use `ql.os.set_syscall()` with the correct callback signatures. Hook callbacks receive just `(ql)` and read parameters from registers via `ql.reg.read()` or `ql.os.get_syscall_arg()`.
+## Implementation Phases
 
-Key changes:
-- Replace `ql.hook_intno()` + `ql.hook_syscall()` with `ql.os.set_syscall(name, handler)`
-- Change all hook callbacks from `(ql, intno)` to `(ql)`
-- Replace `ql.os.f_param_read(n)` (Windows-specific) with `ql.reg.read()` or `ql.os.get_syscall_arg(n)` for Linux
-- Use `ql.mem.string(addr)` for reading string arguments from memory
-- For return value capture, either use `QL_INTERCEPT.EXIT` or check `ql.reg.read("rax")` after the syscall
+### Phase 1: Backend Changes (Days 1-2)
 
-### Fix 4: `src/detonate/output/navigator.py`
+- [ ] **1.1** Add static files mount to `src/detonate/api/app.py`
+- [ ] **1.2** Add `delete_analysis()` method to `src/detonate/db/store.py`
+- [ ] **1.3** Update `DELETE /api/v1/reports/{sessionId}` route
+- [ ] **1.4** Add `GET /api/v1/analyses/{sessionId}/api_calls` endpoint
+- [ ] **1.5** Add `GET /api/v1/analyses/{sessionId}/findings` endpoint
+- [ ] **1.6** Update `docker-compose.yml` with web volume
+- [ ] **1.7** Update `Makefile` with web commands
+- [ ] **1.8** Test all new endpoints with curl/Postman
 
-Replace all `datetime.utcnow()` with `datetime.now(timezone.utc)`. Also update test file `tests/test_navigator.py` correspondingly.
+---
 
-### Fix 5: Test Samples
+### Phase 2: Setup & Foundation (Day 3)
 
-Create using system compiler:
+- [ ] **2.1** Create `/web` directory structure
+- [ ] **2.2** Download dependencies:
+  - [ ] PicoCSS (`web/css/pico.min.css`)
+  - [ ] Chart.js (`web/js/chart.min.js`)
+  - [ ] marked.js (`web/js/marked.min.js`)
+- [ ] **2.3** Create base HTML template (shared header/nav/footer)
+- [ ] **2.4** Implement theme toggle (light/dark, localStorage)
+- [ ] **2.5** Create `web/css/custom.css` with all custom styles
+- [ ] **2.6** Create `web/js/app.js` with shared utilities:
+  - `formatRelativeTime()`
+  - `formatAbsoluteTime()`
+  - `copyToClipboard()`
+  - `toggleTheme()`
+  - `getTheme()`
+- [ ] **2.7** Test static file serving via FastAPI
+
+---
+
+### Phase 3: Dashboard (Day 4)
+
+- [ ] **3.1** Build `web/index.html` structure
+- [ ] **3.2** Create navigation header
+- [ ] **3.3** Build statistics cards grid
+- [ ] **3.4** Build recent analyses table
+- [ ] **3.5** Create `web/js/dashboard.js`:
+  - `loadDashboardStats()`
+  - `loadRecentAnalyses()`
+  - `renderActivityChart()`
+- [ ] **3.6** Integrate Chart.js for activity graph
+- [ ] **3.7** Test with live API data
+- [ ] **3.8** Test theme toggle persistence
+
+---
+
+### Phase 4: Submit Analysis (Day 5)
+
+- [ ] **4.1** Build `web/submit.html` form structure
+- [ ] **4.2** Implement drag-and-drop file upload zone
+- [ ] **4.3** Add file info display (name, size)
+- [ ] **4.4** Create `web/js/submit.js`:
+  - `handleFileSelect()`
+  - `computeFileHash()` (Web Crypto SHA256)
+  - `submitAnalysis()`
+  - `handleSubmissionSuccess()`
+  - `handleSubmissionError()`
+- [ ] **4.5** Implement upload progress indicator
+- [ ] **4.6** Add form validation (required fields)
+- [ ] **4.7** Test file submission end-to-end
+- [ ] **4.8** Test redirect to analysis detail
+
+---
+
+### Phase 5: Analyses List (Day 6)
+
+- [ ] **5.1** Build `web/analyses.html` table structure
+- [ ] **5.2** Create filter form (status, platform, search)
+- [ ] **5.3** Build results table with all columns
+- [ ] **5.4** Create `web/js/analyses.js`:
+  - `loadAnalyses()`
+  - `applyFilters()`
+  - `renderTable()`
+  - `renderPagination()`
+  - `deleteAnalysis()`
+  - `parseQueryParams()`
+- [ ] **5.5** Implement pagination controls
+- [ ] **5.6** Add delete with confirmation dialog
+- [ ] **5.7** Add copy-to-clipboard for hashes
+- [ ] **5.8** Test filtering with 100+ analyses
+
+---
+
+### Phase 6: Analysis Detail (Days 7-9)
+
+- [ ] **6.1** Build `web/analysis.html` with tab structure
+- [ ] **6.2** Implement tab switching with URL hash
+- [ ] **6.3** Create `web/js/analysis.js`:
+  - `loadAnalysisDetail()`
+  - `switchTab()`
+  - `renderTechniquesMatrix()`
+  - `renderAPICalls()`
+  - `pollAnalysisStatus()`
+  - `startPolling()` / `stopPolling()`
+  - `expandJson()`
+  - `renderMarkdownPreview()`
+
+**Tab 1: Overview**
+- [ ] **6.4** Sample information card
+- [ ] **6.5** Timeline display
+- [ ] **6.6** Status badge with color
+- [ ] **6.7** Executive summary with tactics pie chart
+
+**Tab 2: ATT&CK Techniques**
+- [ ] **6.8** Techniques count summary
+- [ ] **6.9** Matrix grid layout
+- [ ] **6.10** Technique cards with confidence badges
+- [ ] **6.11** Click modal with details
+- [ ] **6.12** Link to MITRE ATT&CK website
+
+**Tab 3: API Calls**
+- [ ] **6.13** Timeline table structure
+- [ ] **6.14** Filter inputs (API name, technique ID)
+- [ ] **6.15** Expandable JSON parameters
+- [ ] **6.16** Pagination (Load More button)
+- [ ] **6.17** Export buttons (JSON, CSV)
+
+**Tab 4: Reports**
+- [ ] **6.18** Download buttons (4 formats)
+- [ ] **6.19** Markdown report preview (marked.js)
+- [ ] **6.20** Navigator layer mini-preview
+
+**Polling**
+- [ ] **6.21** Implement 5-second polling for pending/running
+- [ ] **6.22** Auto-stop on completion/failure
+- [ ] **6.23** Auto-reload on completion
+- [ ] **6.24** Max attempts timeout (120 attempts = 10 minutes)
+- [ ] **6.25** Error handling for failed polls
+
+- [ ] **6.26** Test with completed analyses
+- [ ] **6.27** Test with pending/running analyses
+- [ ] **6.28** Test with failed analyses
+
+---
+
+### Phase 7: ATT&CK Navigator (Day 10)
+
+- [ ] **7.1** Build `web/navigator.html` full matrix structure
+- [ ] **7.2** Create `web/js/navigator.js`:
+  - `loadNavigatorData()`
+  - `renderMatrix()`
+  - `showTechniqueModal()`
+  - `filterTechniques()`
+  - `exportLayer()`
+- [ ] **7.3** Implement full ATT&CK grid (all tactics)
+- [ ] **7.4** Add color-coding by confidence
+- [ ] **7.5** Implement hover tooltips
+- [ ] **7.6** Build click modal with full details
+- [ ] **7.7** Add search/filter functionality
+- [ ] **7.8** Add export button
+- [ ] **7.9** Test with complex analyses (20+ techniques)
+
+---
+
+### Phase 8: Polish & Testing (Day 11)
+
+- [ ] **8.1** Add error handling throughout all pages
+- [ ] **8.2** Add loading states/skeletons
+- [ ] **8.3** Improve responsive design (mobile/tablet)
+- [ ] **8.4** Add keyboard navigation (Tab, Enter, Escape)
+- [ ] **8.5** Test cross-browser (Chrome, Firefox, Safari, Edge)
+- [ ] **8.6** Performance optimization:
+  - [ ] Minimize DOM manipulation
+  - [ ] Debounce search inputs
+  - [ ] Lazy load API calls
+- [ ] **8.7** Test with edge cases:
+  - [ ] Empty analyses list
+  - [ ] 1000+ API calls
+  - [ ] Very long strings
+  - [ ] Special characters in filenames
+- [ ] **8.8** Update README.md with web UI documentation
+
+---
+
+## Testing Strategy
+
+### Backend Testing
 
 ```bash
-# hello_x8664 — minimal ELF that exits(0)
-cat > /tmp/hello.S << 'EOF'
-.global _start
-_start:
-    mov $60, %rax    # sys_exit
-    xor %rdi, %rdi   # exit code 0
-    syscall
-EOF
-as -o hello_x8664.o hello_x8664.S && ld -o hello_x8664 hello_x8664.o
+# Test static file serving
+curl http://localhost:8000/web/index.html
 
-# trigger_x8664 — safe ELF that exercises interesting syscalls
-# (open /etc/passwd for reading, read, write to stdout, socket, setuid)
-# This should be a simple C program compiled statically
+# Test new endpoints
+curl http://localhost:8000/api/v1/analyses/{sessionId}/api_calls?page=1
+curl http://localhost:8000/api/v1/analyses/{sessionId}/findings?page=1
+curl -X DELETE http://localhost:8000/api/v1/reports/{sessionId}
 ```
 
-### Fix 6: Dockerfile Updates
+### Frontend Testing
 
-- Remove `COPY poetry.lock` line or make it conditional
-- Add step to populate Linux rootfs from container filesystem
-- Fix healthcheck to use `curl` instead of `python requests`
-- Add `poetry.lock` generation step
+Manual testing checklist for each page:
 
-### Fix 7: docker-compose.yml Healthcheck
+**Dashboard:**
+- [ ] Statistics cards display correct counts
+- [ ] Recent analyses table shows 10 items
+- [ ] Activity chart renders correctly
+- [ ] Theme toggle works and persists
+- [ ] Navigation links work
 
-```yaml
-# Replace:
-test: ["CMD", "python", "-c", "import requests; requests.get('http://127.0.0.1:8000/api/v1/health')"]
-# With:
-test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/v1/health"]
+**Submit:**
+- [ ] File drag-and-drop works
+- [ ] File info displays after selection
+- [ ] SHA256 hash computes correctly
+- [ ] Form submission works
+- [ ] Progress indicator shows
+- [ ] Redirect to detail on success
+- [ ] Error message on failure
+
+**Analyses List:**
+- [ ] Table displays all columns
+- [ ] Filters work (status, platform, search)
+- [ ] Pagination works
+- [ ] Delete with confirmation works
+- [ ] Copy-to-clipboard works
+
+**Analysis Detail:**
+- [ ] All tabs switch correctly
+- [ ] Overview tab shows all info
+- [ ] Techniques matrix renders
+- [ ] API calls table paginates
+- [ ] JSON expand/collapse works
+- [ ] Markdown preview renders
+- [ ] Download buttons work
+- [ ] Polling works for pending analyses
+
+**Navigator:**
+- [ ] Full matrix renders
+- [ ] Hover tooltips work
+- [ ] Click modal shows details
+- [ ] Search/filter works
+- [ ] Export works
+
+---
+
+## Dependencies Download Script
+
+```bash
+#!/bin/bash
+# Run from project root to download all dependencies
+
+set -e
+
+echo "Creating web directory structure..."
+mkdir -p web/js web/css
+
+echo "Downloading PicoCSS..."
+curl -L https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css \
+  -o web/css/pico.min.css
+
+echo "Downloading Chart.js..."
+curl -L https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js \
+  -o web/js/chart.min.js
+
+echo "Downloading marked.js..."
+curl -L https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js \
+  -o web/js/marked.min.js
+
+echo "Setting permissions..."
+chmod -R 755 web/
+
+echo "Done! Dependencies downloaded to web/js/ and web/css/"
+echo "Total size:"
+du -sh web/
 ```
 
 ---
 
-## Verification Checklist
+## API Reference
 
-After all fixes are applied:
+### Existing Endpoints (Used by Web UI)
 
-- [ ] `pytest` passes (199+ tests)
-- [ ] `detonate analyze /bin/ls --platform linux --arch x86_64` completes without error
-- [ ] `detonate analyze /bin/true --platform linux --arch x86_64 --format all` produces all 4 output files
-- [ ] `detonate serve` starts without error
-- [ ] `curl http://localhost:8000/health` returns healthy status
-- [ ] `detonate db init` creates database
-- [ ] `detonate list-analyses` shows results
-- [ ] `detonate export <session_id> --format report` produces markdown
-- [ ] `detonate export <session_id> --format navigator` produces valid Navigator JSON
-- [ ] `detonate export <session_id> --format stix` produces valid STIX bundle
-- [ ] `detonate export <session_id> --format log` produces valid JSONL
-- [ ] Safe test samples in `examples/samples/` work end-to-end
-- [ ] `docker build -t detonate:latest .` succeeds
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/reports` | GET | List analyses with pagination |
+| `/api/v1/reports/{sessionId}` | DELETE | Delete analysis |
+| `/api/v1/analyze/{sessionId}` | GET | Get analysis status |
+| `/api/v1/reports/{sessionId}/navigator` | GET | Download Navigator layer |
+| `/api/v1/reports/{sessionId}/stix` | GET | Download STIX bundle |
+| `/api/v1/reports/{sessionId}/report` | GET | Download Markdown report |
+| `/api/v1/reports/{sessionId}/log` | GET | Download JSON log |
+| `/health` | GET | Health check |
+
+### New Endpoints (To Be Implemented)
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/analyses/{sessionId}/api_calls` | GET | Paginated API calls |
+| `/api/v1/analyses/{sessionId}/findings` | GET | Paginated findings |
+| `/` | GET | Redirect to `/web/index.html` |
+
+---
+
+## Success Criteria
+
+### Functional Requirements
+
+- [x] Users can submit samples for analysis via web form
+- [x] Users can view dashboard with system statistics
+- [x] Users can browse and filter all analyses
+- [x] Users can view detailed analysis results with tabs
+- [x] Users can see ATT&CK techniques in matrix format
+- [x] Users can download all report formats
+- [x] Users can toggle light/dark theme
+- [x] Running analyses poll for status updates
+
+### Non-Functional Requirements
+
+- [x] All static assets served locally (no CDN)
+- [x] No JavaScript frameworks (vanilla only)
+- [x] Single container deployment (FastAPI serves static)
+- [x] No authentication required
+- [x] Responsive design works on mobile/tablet
+- [x] Page load time < 2 seconds
+- [x] Polling interval: 5 seconds
+- [x] All pages work in Chrome, Firefox, Safari, Edge
+
+---
+
+## Notes
+
+- **MD5 Hash:** Not computed client-side (Web Crypto doesn't support). Server computes both MD5 and SHA256.
+- **Error Pages:** Using PicoCSS defaults, no custom 404/500 pages.
+- **Real-time Updates:** Polling only, no WebSocket/SSE.
+- **Markdown Preview:** Uses marked.js (~6KB) for full Markdown support.
+- **Primary Color:** `#d32f2f` (red) for malware analysis theme.
+
+---
+
+## Quick Start Commands
+
+```bash
+# Download dependencies
+make web-download-deps
+
+# Start development server
+docker-compose up -d
+
+# Open in browser
+open http://localhost:8000/
+
+# Test endpoints
+curl http://localhost:8000/api/v1/reports
+curl http://localhost:8000/web/index.html
+```
+
+---
+
+**Last Updated:** 2026-04-22  
+**Status:** Ready for implementation
