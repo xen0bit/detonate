@@ -41,7 +41,7 @@ async function loadDashboardStats() {
   dashboardAbortController = new AbortController();
 
   try {
-    const response = await fetch(`${API_BASE}/reports?per_page=1000`, {
+    const response = await fetch(`${API_BASE}/reports?per_page=100`, {
       signal: dashboardAbortController.signal,
     });
 

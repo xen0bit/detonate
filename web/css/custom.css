@@ -369,6 +369,12 @@
   margin: 1rem auto;
 }
 
+/* Activity chart container */
+#activity-chart {
+  max-height: 200px !important;
+  height: 200px !important;
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
   .navbar {

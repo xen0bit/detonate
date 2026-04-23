@@ -522,7 +522,8 @@ function formatAPICallRow(call) {
   
   if (hasParams) {
     try {
-      const parsed = JSON.parse(call.params_json);
+      // params_json may already be parsed (object) or a string
+      const parsed = typeof call.params_json === 'string' ? JSON.parse(call.params_json) : call.params_json;
       formattedJson = escapeHtml(JSON.stringify(parsed, null, 2));
     } catch (e) {
       // Malformed JSON - display raw string with warning

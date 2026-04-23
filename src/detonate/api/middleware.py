@@ -1,6 +1,7 @@
 """Request logging and error handling middleware."""
 
 import time
+from datetime import datetime
 from typing import Callable
 
 from fastapi import FastAPI, Request, Response
@@ -45,14 +46,20 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
         try:
             return await call_next(request)
         except Exception as exc:
-            # Log the exception (would use structlog in production)
-            # log.exception("Unhandled exception")
+            # Log the exception with traceback to file
+            import traceback
+            with open('/tmp/error.log', 'a') as f:
+                f.write(f"\n=== ERROR at {datetime.now()} ===\n")
+                f.write(f"Path: {request.url.path}\n")
+                f.write(f"Exception: {type(exc).__name__}: {exc}\n")
+                f.write(traceback.format_exc())
+                f.write("\n")
 
             # Return consistent error response
             return JSONResponse(
                 status_code=500,
                 content={
-                    "detail": "Internal server error",
+                    "detail": f"Internal server error: {type(exc).__name__}: {exc}",
                     "type": type(exc).__name__,
                 },
             )

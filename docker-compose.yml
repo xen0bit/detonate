@@ -28,13 +28,18 @@ services:
       - ./output:/output:rw
       # Database persistence
       - ./data/db:/var/lib/detonate:rw
+      # Rootfs tmp for emulation (writable for sample execution)
+      - ./data/rootfs/x86_linux/tmp:/app/data/rootfs/x86_linux/tmp:rw
+      - ./data/rootfs/x8664_linux/tmp:/app/data/rootfs/x8664_linux/tmp:rw
     ports:
-      - "127.0.0.1:8000:8000"
+      - "8000:8000"
     environment:
       - DETONATE_DATABASE=/var/lib/detonate/detonate.db
       - DETONATE_ROOTFS=/app/data/rootfs
       - DETONATE_DLLS_X86=/opt/rootfs/x86_windows/dlls
       - DETONATE_DLLS_X64=/opt/rootfs/x8664_windows/dlls
+      - DETONATE_OUTPUT_DIR=/output
+      - DETONATE_WEB_DIR=/app/web
     deploy:
       resources:
         limits:
@@ -46,13 +51,12 @@ services:
           memory: 1G
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/v1/health"]
-      interval: 30s
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/health"]
+      interval: 15s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 60s
 
 networks:
   isolated:
-    internal: true
     driver: bridge

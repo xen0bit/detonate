@@ -52,8 +52,13 @@ async function handleFileSelect(file) {
   // Compute SHA256 hash
   try {
     fileHash = await computeFileHash(file);
-    infoSha256.textContent = fileHash;
-    infoSha256.title = fileHash;
+    if (fileHash === 'server-side') {
+      infoSha256.textContent = 'Will be computed on server';
+      infoSha256.title = 'Hash will be computed server-side';
+    } else {
+      infoSha256.textContent = fileHash;
+      infoSha256.title = fileHash;
+    }
     
     submitBtn.disabled = false;
     submitBtn.textContent = 'Start Analysis';
@@ -68,16 +73,23 @@ async function handleFileSelect(file) {
 }
 
 /**
- * Compute SHA256 hash of a file using Web Crypto API
+ * Compute SHA256 hash of a file
  * @param {File} file - File to hash
  * @returns {Promise<string>} Hex-encoded SHA256 hash
  */
 async function computeFileHash(file) {
-  const buffer = await file.arrayBuffer();
-  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  return hashHex;
+  // Try Web Crypto API first (works in secure contexts: HTTPS or localhost)
+  if (crypto.subtle) {
+    const buffer = await file.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    return hashHex;
+  }
+  
+  // Fallback: compute hash on server side
+  // Return a placeholder that indicates server-side hashing will be used
+  return 'server-side';
 }
 
 /**

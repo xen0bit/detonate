@@ -303,6 +303,50 @@ class DatabaseStore:
             session.refresh(string)
             return string
 
+    def add_api_calls(self, analysis_id: int, api_calls: list) -> int:
+        """Add multiple API call records in batch."""
+        if not api_calls:
+            return 0
+        with Session(self.engine) as session:
+            for idx, call in enumerate(api_calls):
+                api_call = APICall(
+                    analysis_id=analysis_id,
+                    sequence_number=idx + 1,
+                    timestamp=call.timestamp,
+                    api_name=call.api_name,
+                    syscall_name=call.syscall_name,
+                    address=call.address,
+                    params_json=call.params,
+                    return_value=str(call.return_value) if call.return_value is not None else None,
+                    technique_id=call.technique_id,
+                    confidence=call.confidence,
+                )
+                session.add(api_call)
+            session.commit()
+            return len(api_calls)
+
+    def add_findings(self, analysis_id: int, findings: list) -> int:
+        """Add multiple technique findings in batch."""
+        if not findings:
+            return 0
+        now = datetime.now(timezone.utc)
+        with Session(self.engine) as session:
+            for finding in findings:
+                technique_finding = Finding(
+                    analysis_id=analysis_id,
+                    technique_id=finding.technique_id,
+                    technique_name=finding.technique_name,
+                    tactic=finding.tactic,
+                    confidence=finding.confidence,
+                    confidence_score=finding.confidence_score,
+                    evidence_count=finding.evidence_count,
+                    first_seen=finding.first_seen or now,
+                    last_seen=finding.last_seen or now,
+                )
+                session.add(technique_finding)
+            session.commit()
+            return len(findings)
+
     def get_analysis(self, session_id: str) -> Optional[Analysis]:
         """Get analysis by session ID."""
         with Session(self.engine) as session:

@@ -58,6 +58,9 @@ RUN mkdir -p data/rootfs/x86_linux/lib data/rootfs/x8664_linux/lib64 data/rootfs
     # Create minimal /etc with passwd file (some binaries expect it)
     echo "root:x:0:0:root:/root:/bin/bash" > data/rootfs/x86_linux/etc/passwd && \
     cp data/rootfs/x86_linux/etc/passwd data/rootfs/x8664_linux/etc/passwd && \
+    # Create tmp directories for sample execution (will be mounted as writable)
+    mkdir -p data/rootfs/x86_linux/tmp data/rootfs/x8664_linux/tmp && \
+    chown -R 1000:1000 data/rootfs/x86_linux/tmp data/rootfs/x8664_linux/tmp && \
     # Validation: verify rootfs has required files
     echo "Validating x86_64 rootfs..." && \
     test -f data/rootfs/x8664_linux/lib64/ld-linux-x86-64.so.2 && \
@@ -111,8 +114,8 @@ RUN mkdir -p /var/lib/detonate /output /samples && \
 USER detonate
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -sf http://127.0.0.1:8000/api/v1/health || exit 1
+HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -sf http://127.0.0.1:8000/health || exit 1
 
 # Expose API port
 EXPOSE 8000

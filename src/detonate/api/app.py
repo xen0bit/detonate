@@ -65,12 +65,18 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
 
     logger = logging.getLogger(__name__)
 
-    # Correct path: api/ → detonate/ → src/ → project root (3 levels up)
-    # This file is at: src/detonate/api/app.py
-    # Project root is 3 parent directories up
-    current_file = Path(__file__).resolve()
-    project_root = current_file.parent.parent.parent
-    web_dir = project_root / "web"
+    # Check environment variable first (for Docker deployments), then fall back to relative path
+    import os
+    web_dir_env = os.environ.get("DETONATE_WEB_DIR")
+    if web_dir_env:
+        web_dir = Path(web_dir_env)
+    else:
+        # Correct path: api/ → detonate/ → src/ → project root (3 levels up)
+        # This file is at: src/detonate/api/app.py
+        # Project root is 3 parent directories up
+        current_file = Path(__file__).resolve()
+        project_root = current_file.parent.parent.parent
+        web_dir = project_root / "web"
 
     # Log warning if web directory doesn't exist (aids debugging)
     if not web_dir.exists():

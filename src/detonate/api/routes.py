@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy.orm import Session
 
 from ..core.session import AnalysisSession, APICallRecord, TechniqueMatch, AnalysisResult
 from ..db.store import DatabaseStore
@@ -39,9 +40,12 @@ async def _run_analysis_background(
     """
     Run analysis in background and persist results to database.
 
-    This is a simplified placeholder that simulates analysis.
-    In production, this would invoke the Qiling emulator.
+    Invokes the Qiling-based DetonateEmulator to analyze the sample.
     """
+    from ..core.emulator import DetonateEmulator
+    import shutil
+    import os
+    
     # Create fresh DB connection for background task
     db = DatabaseStore(db_path)
     try:
@@ -49,31 +53,71 @@ async def _run_analysis_background(
         db.update_analysis_status(session_id, "running")
         _tasks[session_id]["status"] = "running"
 
-        # Simulate brief analysis
-        import asyncio
-        await asyncio.sleep(0.1)
-
-        # Update to completed
-        completed_at = datetime.now(timezone.utc)
-        db.update_analysis_status(
-            session_id,
-            "completed",
-            completed_at=completed_at,
-            duration_seconds=0.1,
-        )
-        _tasks[session_id]["status"] = "completed"
-        _tasks[session_id]["completed_at"] = completed_at.isoformat()
+        # Run emulator with sample copied into rootfs tmp directory
+        from ..config import get_settings
+        settings = get_settings()
+        rootfs_path = settings.get_rootfs_path(platform, architecture)
+        
+        # Copy sample into rootfs tmp so Qiling can access it
+        sample_temp_dir = rootfs_path / "tmp"
+        sample_temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_in_rootfs = sample_temp_dir / f"sample_{os.path.basename(sample_path)}"
+        shutil.copy2(sample_path, temp_in_rootfs)
+        
+        try:
+            emulator = DetonateEmulator(
+                sample_path=str(temp_in_rootfs),
+                platform=platform,
+                arch=architecture,
+                timeout=timeout,
+                settings=settings,
+            )
+            
+            result = await emulator.run()
+            
+            # Persist results to database
+            completed_at = datetime.now(timezone.utc)
+            db.update_analysis_status(
+                session_id,
+                "completed",
+                completed_at=completed_at,
+                duration_seconds=result.duration_seconds,
+            )
+            
+            # Get analysis ID for storing API calls and findings
+            analysis = db.get_analysis(session_id)
+            if analysis:
+                # Store API calls
+                if result.api_calls:
+                    db.add_api_calls(analysis.id, result.api_calls)
+                
+                # Store findings/techniques
+                if result.findings:
+                    db.add_findings(analysis.id, result.findings)
+            
+            _tasks[session_id]["status"] = "completed"
+            _tasks[session_id]["completed_at"] = completed_at.isoformat()
+        finally:
+            # Cleanup sample from rootfs tmp
+            if temp_in_rootfs.exists():
+                temp_in_rootfs.unlink()
 
     except Exception as e:
-        # Update to failed
-        db.update_analysis_status(
-            session_id,
-            "failed",
-            error_message=str(e),
-            completed_at=datetime.now(timezone.utc),
-        )
-        _tasks[session_id]["status"] = "failed"
-        _tasks[session_id]["error"] = str(e)
+        # Only update to failed if not already completed
+        if _tasks.get(session_id, {}).get("status") != "completed":
+            import traceback
+            error_msg = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+            try:
+                db.update_analysis_status(
+                    session_id,
+                    "failed",
+                    error_message=error_msg,
+                    completed_at=datetime.now(timezone.utc),
+                )
+            except ValueError:
+                pass  # Already in terminal state
+            _tasks[session_id]["status"] = "failed"
+            _tasks[session_id]["error"] = str(e)
 
 
 @router.post("/analyze")
@@ -172,11 +216,26 @@ async def get_analysis_status(session_id: str, request: Request):
         if db_analysis is None:
             raise HTTPException(status_code=404, detail="Analysis not found")
         # Analysis exists in DB but not in memory (server restart)
-        # Return basic info from DB
+        # Return full info from DB
         return {
             "session_id": session_id,
             "status": db_analysis.status,
             "created_at": db_analysis.created_at.isoformat() if db_analysis.created_at else None,
+            "file_size": db_analysis.sample_size,
+            "platform": db_analysis.platform,
+            "architecture": db_analysis.architecture,
+            "md5": db_analysis.sample_md5,
+            "sha256": db_analysis.sample_sha256,
+            "file_type": db_analysis.file_type,
+            "completed_at": db_analysis.completed_at.isoformat() if db_analysis.completed_at else None,
+            "duration_seconds": db_analysis.duration_seconds,
+            "findings": [],
+            "outputs": {
+                "navigator": f"/api/v1/reports/{session_id}/navigator",
+                "stix": f"/api/v1/reports/{session_id}/stix",
+                "report": f"/api/v1/reports/{session_id}/report",
+                "log": f"/api/v1/reports/{session_id}/log",
+            } if db_analysis.status == "completed" else None,
         }
 
     task_info = _tasks[session_id]
@@ -188,10 +247,21 @@ async def get_analysis_status(session_id: str, request: Request):
         "created_at": task_info.get("created_at"),
     }
 
+    # Add DB data if available
+    if db_analysis:
+        response["file_size"] = db_analysis.sample_size
+        response["platform"] = db_analysis.platform
+        response["architecture"] = db_analysis.architecture
+        response["md5"] = db_analysis.sample_md5
+        response["sha256"] = db_analysis.sample_sha256
+        response["file_type"] = db_analysis.file_type
+        response["completed_at"] = db_analysis.completed_at.isoformat() if db_analysis.completed_at else None
+        response["duration_seconds"] = db_analysis.duration_seconds
+
     if task_info.get("status") == "completed":
         response["analysis"] = {
             "completed_at": task_info.get("completed_at"),
-            "duration_seconds": 0.1,
+            "duration_seconds": response.get("duration_seconds", 0.1),
             "techniques_detected": 0,
             "tactics_observed": [],
         }
@@ -353,26 +423,65 @@ async def get_text_report(session_id: str, request: Request):
         platform = db_analysis.platform
         architecture = db_analysis.architecture
 
-    # Create a minimal AnalysisResult for the report generator
+    # Get findings from database
+    findings_data = db.get_analysis_with_data(session_id, include_findings=True, include_api_calls=True, include_strings=True)
+    
+    # Convert DB findings to TechniqueMatch objects
+    technique_matches = []
+    if findings_data and hasattr(findings_data, 'findings') and findings_data.findings:
+        for f in findings_data.findings:
+            technique_matches.append(TechniqueMatch(
+                technique_id=f.technique_id,
+                technique_name=f.technique_name,
+                tactic=f.tactic,
+                confidence=f.confidence,
+                confidence_score=f.confidence_score,
+                evidence_count=f.evidence_count,
+                first_seen=f.first_seen,
+                last_seen=f.last_seen,
+            ))
+    
+    # Convert DB API calls to APICallRecord objects
+    api_call_records = []
+    if findings_data and hasattr(findings_data, 'api_calls') and findings_data.api_calls:
+        for call in findings_data.api_calls:
+            api_call_records.append(APICallRecord(
+                timestamp=call.timestamp,
+                api_name=call.api_name,
+                syscall_name=call.syscall_name,
+                params=call.params_json or {},
+                return_value=call.return_value,
+                address=call.address or '',
+                technique_id=call.technique_id,
+                confidence=call.confidence,
+                sequence_number=call.sequence_number,
+            ))
+    
+    # Convert DB strings
+    string_list = []
+    if findings_data and hasattr(findings_data, 'strings') and findings_data.strings:
+        string_list = [s.value for s in findings_data.strings]
+
+    # Create a full AnalysisResult for the report generator
     now = datetime.now(timezone.utc)
     started_at = db_analysis.created_at if db_analysis else now - timedelta(seconds=5)
     result = AnalysisResult(
         session_id=session_id,
         sample_sha256=sample_sha256,
-        sample_md5=None,
+        sample_md5=db_analysis.sample_md5 if db_analysis else None,
         sample_path="/tmp/sample",
-        sample_size=0,
-        file_type="Unknown",
+        sample_size=db_analysis.sample_size if db_analysis else 0,
+        file_type=db_analysis.file_type if db_analysis else "Unknown",
         platform=platform,
         architecture=architecture,
         status="completed",
         error_message=None,
         started_at=started_at,
-        completed_at=now,
-        duration_seconds=5.0,
-        api_calls=[],
-        findings=[],
-        strings=[],
+        completed_at=db_analysis.completed_at if db_analysis else now,
+        duration_seconds=db_analysis.duration_seconds if db_analysis else 5.0,
+        api_calls=api_call_records,
+        findings=technique_matches,
+        strings=string_list,
     )
 
     report = generate_report(result)
