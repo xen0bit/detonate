@@ -45,6 +45,49 @@ class LinuxHooks:
     SYS_MMAP = 9
     SYS_MPROTECT = 10
     SYS_MREMAP = 25
+    # New syscalls for expanded coverage
+    SYS_GETUID = 102
+    SYS_GETEUID = 107
+    SYS_GETGID = 104
+    SYS_GETEGID = 108
+    SYS_SETRESUID = 117
+    SYS_SETRESGID = 119
+    SYS_GETRESUID = 118
+    SYS_GETRESGID = 120
+    SYS_UNAME = 63
+    SYS_GETCWD = 79
+    SYS_READLINK = 89
+    SYS_READLINKAT = 267
+    SYS_GETHOSTNAME = 118
+    SYS_SYSINFO = 99
+    SYS_GETUID32 = 144
+    SYS_GETGID32 = 145
+    SYS_GETGROUPS = 115
+    SYS_GETGROUPS32 = 146
+    SYS_MOUNT = 165
+    SYS_UMOUNT = 166
+    SYS_UMOUNT2 = 166  # umount2 uses same number on some archs
+    SYS_PIVOT_ROOT = 155
+    SYS_UNSHARE = 272
+    SYS_RENAME = 82
+    SYS_RENAMEAT = 260
+    SYS_RENAMEAT2 = 316
+    SYS_FADVISE64 = 221
+    SYS_PREAD64 = 17
+    SYS_PWRITE64 = 18
+    SYS_SPLICE = 275
+    SYS_VMSPLICE = 278
+    SYS_TEE = 277
+    SYS_SENDMSG = 46
+    SYS_RECVMSG = 47
+    SYS_ACCEPT = 43
+    SYS_ACCEPT4 = 288
+    SYS_ACCESS = 21
+    SYS_FACCESSAT = 269
+    SYS_STAT = 4
+    SYS_FSTAT = 5
+    SYS_LSTAT = 6
+    SYS_STATX = 332
 
     # Syscall name to number mapping for registration
     SYSCALL_NAMES = {
@@ -54,6 +97,8 @@ class LinuxHooks:
         SYS_PROCESS_VM_WRITEV: "process_vm_writev",
         SYS_OPEN: "open",
         SYS_OPENAT: "openat",
+        SYS_READ: "read",
+        SYS_WRITE: "write",
         SYS_UNLINK: "unlink",
         SYS_UNLINKAT: "unlinkat",
         SYS_SOCKET: "socket",
@@ -66,9 +111,48 @@ class LinuxHooks:
         SYS_KILL: "kill",
         SYS_SETUID: "setuid",
         SYS_SETGID: "setgid",
+        SYS_SETREUID: "setreuid",
+        SYS_SETREGID: "setregid",
         SYS_MMAP: "mmap",
         SYS_MPROTECT: "mprotect",
         SYS_MREMAP: "mremap",
+        # New syscalls
+        SYS_GETUID: "getuid",
+        SYS_GETEUID: "geteuid",
+        SYS_GETGID: "getgid",
+        SYS_GETEGID: "getegid",
+        SYS_SETRESUID: "setresuid",
+        SYS_SETRESGID: "setresgid",
+        SYS_UNAME: "uname",
+        SYS_GETCWD: "getcwd",
+        SYS_READLINK: "readlink",
+        SYS_READLINKAT: "readlinkat",
+        SYS_GETHOSTNAME: "gethostname",
+        SYS_SYSINFO: "sysinfo",
+        SYS_MOUNT: "mount",
+        SYS_UMOUNT: "umount",
+        SYS_UMOUNT2: "umount2",
+        SYS_PIVOT_ROOT: "pivot_root",
+        SYS_UNSHARE: "unshare",
+        SYS_RENAME: "rename",
+        SYS_RENAMEAT: "renameat",
+        SYS_RENAMEAT2: "renameat2",
+        SYS_FADVISE64: "fadvise64",
+        SYS_PREAD64: "pread64",
+        SYS_PWRITE64: "pwrite64",
+        SYS_SPLICE: "splice",
+        SYS_VMSPLICE: "vmsplice",
+        SYS_TEE: "tee",
+        SYS_SENDMSG: "sendmsg",
+        SYS_RECVMSG: "recvmsg",
+        SYS_ACCEPT: "accept",
+        SYS_ACCEPT4: "accept4",
+        SYS_ACCESS: "access",
+        SYS_FACCESSAT: "faccessat",
+        SYS_STAT: "stat",
+        SYS_FSTAT: "fstat",
+        SYS_LSTAT: "lstat",
+        SYS_STATX: "statx",
     }
 
     def __init__(self, session: AnalysisSession, ql: Any):
@@ -107,9 +191,46 @@ class LinuxHooks:
             self.SYS_KILL: self.hook_sys_kill,
             self.SYS_SETUID: self.hook_sys_setuid,
             self.SYS_SETGID: self.hook_sys_setgid,
+            self.SYS_SETREUID: self.hook_sys_setreuid,
+            self.SYS_SETREGID: self.hook_sys_setregid,
             self.SYS_MMAP: self.hook_sys_mmap,
             self.SYS_MPROTECT: self.hook_sys_mprotect,
             self.SYS_MREMAP: self.hook_sys_mremap,
+            # New syscalls
+            self.SYS_GETUID: self.hook_sys_getuid,
+            self.SYS_GETEUID: self.hook_sys_geteuid,
+            self.SYS_GETGID: self.hook_sys_getgid,
+            self.SYS_GETEGID: self.hook_sys_getegid,
+            self.SYS_GETUID32: self.hook_sys_getuid32,
+            self.SYS_GETGID32: self.hook_sys_getgid32,
+            self.SYS_SETRESUID: self.hook_sys_setresuid,
+            self.SYS_SETRESGID: self.hook_sys_setresgid,
+            self.SYS_UNAME: self.hook_sys_uname,
+            self.SYS_GETCWD: self.hook_sys_getcwd,
+            self.SYS_READLINK: self.hook_sys_readlink,
+            self.SYS_READLINKAT: self.hook_sys_readlinkat,
+            self.SYS_GETHOSTNAME: self.hook_sys_gethostname,
+            self.SYS_SYSINFO: self.hook_sys_sysinfo,
+            self.SYS_MOUNT: self.hook_sys_mount,
+            self.SYS_UMOUNT: self.hook_sys_umount,
+            self.SYS_UMOUNT2: self.hook_sys_umount2,
+            self.SYS_PIVOT_ROOT: self.hook_sys_pivot_root,
+            self.SYS_UNSHARE: self.hook_sys_unshare,
+            self.SYS_RENAME: self.hook_sys_rename,
+            self.SYS_RENAMEAT2: self.hook_sys_renameat2,
+            self.SYS_FADVISE64: self.hook_sys_fadvise64,
+            self.SYS_PREAD64: self.hook_sys_pread64,
+            self.SYS_SPLICE: self.hook_sys_splice,
+            self.SYS_SENDMSG: self.hook_sys_sendmsg,
+            self.SYS_RECVMSG: self.hook_sys_recvmsg,
+            self.SYS_ACCEPT: self.hook_sys_accept,
+            self.SYS_ACCEPT4: self.hook_sys_accept4,
+            self.SYS_ACCESS: self.hook_sys_access,
+            self.SYS_FACCESSAT: self.hook_sys_faccessat,
+            self.SYS_STAT: self.hook_sys_stat,
+            self.SYS_FSTAT: self.hook_sys_fstat,
+            self.SYS_LSTAT: self.hook_sys_lstat,
+            self.SYS_STATX: self.hook_sys_statx,
         }
 
     def install(self) -> None:
@@ -399,6 +520,45 @@ class LinuxHooks:
             pass
         return argv
 
+    def _parse_sockaddr(self, addr_ptr: int, addrlen: int) -> str:
+        """
+        Parse sockaddr_in/sockaddr_in6 structure to extract IP:port.
+        
+        Args:
+            addr_ptr: Pointer to sockaddr structure
+            addrlen: Length of address structure
+            
+        Returns:
+            String representation like "192.168.1.1:443" or "unknown"
+        """
+        if addr_ptr == 0 or addrlen < 2:
+            return "unknown"
+        
+        try:
+            # First 2 bytes are address family (AF_INET=2, AF_INET6=10)
+            family_bytes = self.ql.mem.read(addr_ptr, 2)
+            family = int.from_bytes(family_bytes, "little")
+            
+            if family == 2:  # AF_INET
+                # sockaddr_in: sin_port (2), sin_addr (4), rest ignored
+                # Port at offset 2, IP at offset 4
+                port_bytes = self.ql.mem.read(addr_ptr + 2, 2)
+                port = int.from_bytes(port_bytes, "big")  # Network byte order
+                ip_bytes = self.ql.mem.read(addr_ptr + 4, 4)
+                ip = ".".join(str(b) for b in ip_bytes)
+                return f"{ip}:{port}"
+            elif family == 10:  # AF_INET6
+                # sockaddr_in6: sin6_port (2), sin6_flowinfo (4), sin6_addr (16), sin6_scope_id (4)
+                port_bytes = self.ql.mem.read(addr_ptr + 2, 2)
+                port = int.from_bytes(port_bytes, "big")
+                ip_bytes = self.ql.mem.read(addr_ptr + 8, 16)
+                ip = ":".join(f"{b:02x}" for b in ip_bytes)
+                return f"[{ip}]:{port}"
+        except Exception:
+            pass
+        
+        return "unknown"
+
     def hook_sys_execve(self, ql: Any, *args) -> None:
         """Hook execve syscall ENTER - capture params and create pending record."""
         # x86_64: rdi = filename, rsi = argv, rdx = envp
@@ -618,9 +778,44 @@ class LinuxHooks:
     def hook_sys_connect(self, ql: Any, *args) -> None:
         """Hook connect syscall ENTER - capture params and create pending record."""
         sockfd = ql.arch.regs.rdi
+        addr_addr = ql.arch.regs.rsi
+        addrlen = ql.arch.regs.rdx
 
-        params = {"sockfd": sockfd}
+        # Parse sockaddr_struct to extract IP/port
+        dest_addr = self._parse_sockaddr(addr_addr, addrlen)
+        params = {"sockfd": sockfd, "address": dest_addr}
         record = self._record_syscall("connect", params, return_value=None)
+
+        # Track C2 infrastructure
+        if dest_addr and dest_addr != "unknown":
+            # Check for cloud metadata endpoint access
+            if any(ip in dest_addr for ip in ["169.254.169.254", "169.254.170.2", "metadata.google.internal"]):
+                technique_id = "T1592.004"
+                technique_name = "Cloud Service Dashboard"
+                tactic = "reconnaissance"
+                self.session.add_technique_evidence(
+                    technique_id=technique_id,
+                    technique_name=technique_name,
+                    tactic=tactic,
+                    confidence="high",
+                    confidence_score=0.9,
+                    api_call=record,
+                )
+            
+            # Track as C2 infrastructure (exclude localhost)
+            # Check for IPv4 localhost (127.x.x.x) and IPv6 localhost ([::1] or expanded form)
+            is_localhost = (
+                dest_addr.startswith("127.") or 
+                dest_addr.startswith("[::1]") or
+                "::00:00:00:01" in dest_addr or
+                "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:01" in dest_addr
+            )
+            if not is_localhost:
+                self.session.add_infrastructure(
+                    name=f"C2 Server: {dest_addr}",
+                    infrastructure_types=["command-and-control"],
+                    related_api_call=record,
+                )
 
         # Store as pending - EXIT handler will capture return value
         self._pending_syscalls[record.sequence_number] = ("connect", record)
@@ -734,6 +929,54 @@ class LinuxHooks:
         # Store as pending - EXIT handler will capture return value
         self._pending_syscalls[record.sequence_number] = ("setgid", record)
 
+    def hook_sys_setreuid(self, ql: Any, *args) -> None:
+        """Hook setreuid syscall ENTER - capture params and create pending record."""
+        ruid = ql.arch.regs.rdi
+        euid = ql.arch.regs.rsi
+
+        params = {"ruid": ruid, "euid": euid}
+        record = self._record_syscall("setreuid", params, return_value=None)
+
+        # Add technique evidence immediately
+        technique_id = "T1548.001"
+        technique_name = "Setuid and Setgid"
+        tactic = "privilege-escalation"
+        self.session.add_technique_evidence(
+            technique_id=technique_id,
+            technique_name=technique_name,
+            tactic=tactic,
+            confidence="high",
+            confidence_score=0.85,
+            api_call=record,
+        )
+
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("setreuid", record)
+
+    def hook_sys_setregid(self, ql: Any, *args) -> None:
+        """Hook setregid syscall ENTER - capture params and create pending record."""
+        rgid = ql.arch.regs.rdi
+        egid = ql.arch.regs.rsi
+
+        params = {"rgid": rgid, "egid": egid}
+        record = self._record_syscall("setregid", params, return_value=None)
+
+        # Add technique evidence immediately
+        technique_id = "T1548.001"
+        technique_name = "Setuid and Setgid"
+        tactic = "privilege-escalation"
+        self.session.add_technique_evidence(
+            technique_id=technique_id,
+            technique_name=technique_name,
+            tactic=tactic,
+            confidence="high",
+            confidence_score=0.85,
+            api_call=record,
+        )
+
+        # Store as pending - EXIT handler will capture return value
+        self._pending_syscalls[record.sequence_number] = ("setregid", record)
+
     def hook_sys_mmap(self, ql: Any, *args) -> None:
         """Hook mmap syscall ENTER - capture params and create pending record."""
         addr = ql.arch.regs.rdi
@@ -826,6 +1069,564 @@ class LinuxHooks:
         self._pending_syscalls[record.sequence_number] = ("mremap", record)
 
         log.info("syscall", syscall="mremap", params=params, technique_id=technique_id)
+
+    # New syscall hooks for expanded coverage
+
+    def hook_sys_getuid(self, ql: Any, *args) -> None:
+        """Hook getuid syscall - credential access reconnaissance."""
+        params = {}
+        record = self._record_syscall("getuid", params, return_value=None)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique("getuid", params)
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+        self._pending_syscalls[record.sequence_number] = ("getuid", record)
+
+    def hook_sys_geteuid(self, ql: Any, *args) -> None:
+        """Hook geteuid syscall - credential access reconnaissance."""
+        params = {}
+        record = self._record_syscall("geteuid", params, return_value=None)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique("geteuid", params)
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+        self._pending_syscalls[record.sequence_number] = ("geteuid", record)
+
+    def hook_sys_getgid(self, ql: Any, *args) -> None:
+        """Hook getgid syscall - credential access reconnaissance."""
+        params = {}
+        record = self._record_syscall("getgid", params, return_value=None)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique("getgid", params)
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+        self._pending_syscalls[record.sequence_number] = ("getgid", record)
+
+    def hook_sys_getegid(self, ql: Any, *args) -> None:
+        """Hook getegid syscall - credential access reconnaissance."""
+        params = {}
+        record = self._record_syscall("getegid", params, return_value=None)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique("getegid", params)
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+        self._pending_syscalls[record.sequence_number] = ("getegid", record)
+
+    def hook_sys_getuid32(self, ql: Any, *args) -> None:
+        """Hook getuid32 syscall - system discovery."""
+        params = {}
+        record = self._record_syscall("getuid32", params, return_value=None)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique("getuid32", params)
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+        self._pending_syscalls[record.sequence_number] = ("getuid32", record)
+
+    def hook_sys_getgid32(self, ql: Any, *args) -> None:
+        """Hook getgid32 syscall - system discovery."""
+        params = {}
+        record = self._record_syscall("getgid32", params, return_value=None)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique("getgid32", params)
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+        self._pending_syscalls[record.sequence_number] = ("getgid32", record)
+
+    def hook_sys_setresuid(self, ql: Any, *args) -> None:
+        """Hook setresuid syscall - privilege escalation."""
+        ruid = ql.arch.regs.rdi
+        euid = ql.arch.regs.rsi
+        suid = ql.arch.regs.rdx
+
+        params = {"ruid": ruid, "euid": euid, "suid": suid}
+        record = self._record_syscall("setresuid", params, return_value=None)
+
+        # Add technique evidence for privilege escalation
+        technique_id = "T1548.001"
+        technique_name = "Setuid and Setgid"
+        tactic = "privilege-escalation"
+        self.session.add_technique_evidence(
+            technique_id=technique_id,
+            technique_name=technique_name,
+            tactic=tactic,
+            confidence="high",
+            confidence_score=0.9,
+            api_call=record,
+        )
+
+        self._pending_syscalls[record.sequence_number] = ("setresuid", record)
+
+    def hook_sys_setresgid(self, ql: Any, *args) -> None:
+        """Hook setresgid syscall - privilege escalation."""
+        rgid = ql.arch.regs.rdi
+        egid = ql.arch.regs.rsi
+        sgid = ql.arch.regs.rdx
+
+        params = {"rgid": rgid, "egid": egid, "sgid": sgid}
+        record = self._record_syscall("setresgid", params, return_value=None)
+
+        technique_id = "T1548.001"
+        technique_name = "Setuid and Setgid"
+        tactic = "privilege-escalation"
+        self.session.add_technique_evidence(
+            technique_id=technique_id,
+            technique_name=technique_name,
+            tactic=tactic,
+            confidence="high",
+            confidence_score=0.9,
+            api_call=record,
+        )
+
+        self._pending_syscalls[record.sequence_number] = ("setresgid", record)
+
+    def hook_sys_uname(self, ql: Any, *args) -> None:
+        """Hook uname syscall - system discovery."""
+        buf_addr = ql.arch.regs.rdi
+
+        params = {"buf": hex(buf_addr)}
+        record = self._record_syscall("uname", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("uname", record)
+
+    def hook_sys_getcwd(self, ql: Any, *args) -> None:
+        """Hook getcwd syscall - file/directory discovery."""
+        buf_addr = ql.arch.regs.rdi
+        size = ql.arch.regs.rsi
+
+        params = {"buf": hex(buf_addr), "size": size}
+        record = self._record_syscall("getcwd", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("getcwd", record)
+
+    def hook_sys_readlink(self, ql: Any, *args) -> None:
+        """Hook readlink syscall - symlink discovery."""
+        pathname_addr = ql.arch.regs.rdi
+        buf_addr = ql.arch.regs.rsi
+        bufsiz = ql.arch.regs.rdx
+
+        pathname = self._read_string(pathname_addr)
+        params = {"pathname": pathname, "buf": hex(buf_addr), "bufsiz": bufsiz}
+        record = self._record_syscall("readlink", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("readlink", record)
+
+        if pathname:
+            self.session.add_string(pathname)
+
+    def hook_sys_readlinkat(self, ql: Any, *args) -> None:
+        """Hook readlinkat syscall - symlink discovery."""
+        dirfd = ql.arch.regs.rdi
+        pathname_addr = ql.arch.regs.rsi
+        buf_addr = ql.arch.regs.rdx
+        bufsiz = ql.arch.regs.r10
+
+        pathname = self._read_string(pathname_addr)
+        params = {"dirfd": dirfd, "pathname": pathname, "buf": hex(buf_addr), "bufsiz": bufsiz}
+        record = self._record_syscall("readlinkat", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("readlinkat", record)
+
+        if pathname:
+            self.session.add_string(pathname)
+
+    def hook_sys_gethostname(self, ql: Any, *args) -> None:
+        """Hook gethostname syscall - network discovery."""
+        name_addr = ql.arch.regs.rdi
+        length = ql.arch.regs.rsi
+
+        params = {"name": hex(name_addr), "length": length}
+        record = self._record_syscall("gethostname", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("gethostname", record)
+
+    def hook_sys_sysinfo(self, ql: Any, *args) -> None:
+        """Hook sysinfo syscall - system information discovery."""
+        info_addr = ql.arch.regs.rdi
+
+        params = {"info": hex(info_addr)}
+        record = self._record_syscall("sysinfo", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("sysinfo", record)
+
+    def hook_sys_mount(self, ql: Any, *args) -> None:
+        """Hook mount syscall - container escape detection."""
+        source_addr = ql.arch.regs.rdi
+        target_addr = ql.arch.regs.rsi
+        filesystemtype_addr = ql.arch.regs.rdx
+
+        source = self._read_string(source_addr)
+        target = self._read_string(target_addr)
+        fstype = self._read_string(filesystemtype_addr)
+
+        params = {"source": source, "target": target, "filesystemtype": fstype}
+        record = self._record_syscall("mount", params, return_value=None)
+
+        # Check for container escape indicators
+        if source and any(s in source for s in ["/proc", "/sys", "/dev"]):
+            technique_id = "T1611"
+            technique_name = "Escape to Host"
+            tactic = "privilege-escalation"
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence="high",
+                confidence_score=0.95,
+                api_call=record,
+            )
+
+        self._pending_syscalls[record.sequence_number] = ("mount", record)
+
+        if source:
+            self.session.add_string(source)
+        if target:
+            self.session.add_string(target)
+
+    def hook_sys_umount(self, ql: Any, *args) -> None:
+        """Hook umount syscall."""
+        target_addr = ql.arch.regs.rdi
+        target = self._read_string(target_addr)
+
+        params = {"target": target}
+        record = self._record_syscall("umount", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("umount", record)
+
+        if target:
+            self.session.add_string(target)
+
+    def hook_sys_umount2(self, ql: Any, *args) -> None:
+        """Hook umount2 syscall."""
+        target_addr = ql.arch.regs.rdi
+        flags = ql.arch.regs.rsi
+
+        target = self._read_string(target_addr)
+        params = {"target": target, "flags": flags}
+        record = self._record_syscall("umount2", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("umount2", record)
+
+        if target:
+            self.session.add_string(target)
+
+    def hook_sys_pivot_root(self, ql: Any, *args) -> None:
+        """Hook pivot_root syscall - container escape detection."""
+        new_root_addr = ql.arch.regs.rdi
+        put_old_addr = ql.arch.regs.rsi
+
+        new_root = self._read_string(new_root_addr)
+        put_old = self._read_string(put_old_addr)
+
+        params = {"new_root": new_root, "put_old": put_old}
+        record = self._record_syscall("pivot_root", params, return_value=None)
+
+        technique_id = "T1611"
+        technique_name = "Escape to Host"
+        tactic = "privilege-escalation"
+        self.session.add_technique_evidence(
+            technique_id=technique_id,
+            technique_name=technique_name,
+            tactic=tactic,
+            confidence="high",
+            confidence_score=0.9,
+            api_call=record,
+        )
+
+        self._pending_syscalls[record.sequence_number] = ("pivot_root", record)
+
+        if new_root:
+            self.session.add_string(new_root)
+
+    def hook_sys_unshare(self, ql: Any, *args) -> None:
+        """Hook unshare syscall - container escape detection."""
+        flags = ql.arch.regs.rdi
+
+        params = {"flags": flags}
+        record = self._record_syscall("unshare", params, return_value=None)
+
+        technique_id = "T1611"
+        technique_name = "Escape to Host"
+        tactic = "privilege-escalation"
+        self.session.add_technique_evidence(
+            technique_id=technique_id,
+            technique_name=technique_name,
+            tactic=tactic,
+            confidence="medium",
+            confidence_score=0.8,
+            api_call=record,
+        )
+
+        self._pending_syscalls[record.sequence_number] = ("unshare", record)
+
+    def hook_sys_rename(self, ql: Any, *args) -> None:
+        """Hook rename syscall - potential history clearing."""
+        oldpath_addr = ql.arch.regs.rdi
+        newpath_addr = ql.arch.regs.rsi
+
+        oldpath = self._read_string(oldpath_addr)
+        newpath = self._read_string(newpath_addr)
+
+        params = {"oldpath": oldpath, "newpath": newpath}
+        record = self._record_syscall("rename", params, return_value=None)
+
+        # Check for history file manipulation
+        if oldpath and any(h in oldpath for h in [".bash_history", ".zsh_history", ".history"]):
+            technique_id = "T1070.003"
+            technique_name = "Clear Command History"
+            tactic = "defense-evasion"
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence="high",
+                confidence_score=0.9,
+                api_call=record,
+            )
+
+        self._pending_syscalls[record.sequence_number] = ("rename", record)
+
+        if oldpath:
+            self.session.add_string(oldpath)
+        if newpath:
+            self.session.add_string(newpath)
+
+    def hook_sys_renameat2(self, ql: Any, *args) -> None:
+        """Hook renameat2 syscall - potential history clearing."""
+        olddirfd = ql.arch.regs.rdi
+        oldpath_addr = ql.arch.regs.rsi
+        newdirfd = ql.arch.regs.rdx
+        newpath_addr = ql.arch.regs.r10
+        flags = ql.arch.regs.r8
+
+        oldpath = self._read_string(oldpath_addr)
+        newpath = self._read_string(newpath_addr)
+
+        params = {"olddirfd": olddirfd, "oldpath": oldpath, "newdirfd": newdirfd, "newpath": newpath, "flags": flags}
+        record = self._record_syscall("renameat2", params, return_value=None)
+
+        # Check for history file manipulation
+        if oldpath and any(h in oldpath for h in [".bash_history", ".zsh_history", ".history"]):
+            technique_id = "T1070.003"
+            technique_name = "Clear Command History"
+            tactic = "defense-evasion"
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence="high",
+                confidence_score=0.9,
+                api_call=record,
+            )
+
+        self._pending_syscalls[record.sequence_number] = ("renameat2", record)
+
+        if oldpath:
+            self.session.add_string(oldpath)
+        if newpath:
+            self.session.add_string(newpath)
+
+    def hook_sys_fadvise64(self, ql: Any, *args) -> None:
+        """Hook fadvise64 syscall - potential cache clearing."""
+        fd = ql.arch.regs.rdi
+        offset = ql.arch.regs.rsi
+        length = ql.arch.regs.rdx
+        advice = ql.arch.regs.r10
+
+        params = {"fd": fd, "offset": offset, "length": length, "advice": advice}
+        record = self._record_syscall("fadvise64", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("fadvise64", record)
+
+    def hook_sys_pread64(self, ql: Any, *args) -> None:
+        """Hook pread64 syscall - data collection."""
+        fd = ql.arch.regs.rdi
+        buf_addr = ql.arch.regs.rsi
+        count = ql.arch.regs.rdx
+        offset = ql.arch.regs.r10
+
+        params = {"fd": fd, "buf": hex(buf_addr), "count": count, "offset": offset}
+        record = self._record_syscall("pread64", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("pread64", record)
+
+    def hook_sys_splice(self, ql: Any, *args) -> None:
+        """Hook splice syscall - data movement."""
+        fd_in = ql.arch.regs.rdi
+        off_in = ql.arch.regs.rsi
+        fd_out = ql.arch.regs.rdx
+        off_out = ql.arch.regs.r10
+        length = ql.arch.regs.r8
+        flags = ql.arch.regs.r9
+
+        params = {"fd_in": fd_in, "off_in": off_in, "fd_out": fd_out, "off_out": off_out, "length": length, "flags": flags}
+        record = self._record_syscall("splice", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("splice", record)
+
+    def hook_sys_sendmsg(self, ql: Any, *args) -> None:
+        """Hook sendmsg syscall - network exfiltration."""
+        sockfd = ql.arch.regs.rdi
+        length = ql.arch.regs.rdx
+
+        params = {"sockfd": sockfd, "length": length}
+        record = self._record_syscall("sendmsg", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("sendmsg", record)
+
+    def hook_sys_recvmsg(self, ql: Any, *args) -> None:
+        """Hook recvmsg syscall - network communication."""
+        sockfd = ql.arch.regs.rdi
+        length = ql.arch.regs.rdx
+
+        params = {"sockfd": sockfd, "length": length}
+        record = self._record_syscall("recvmsg", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("recvmsg", record)
+
+    def hook_sys_accept(self, ql: Any, *args) -> None:
+        """Hook accept syscall - potential lateral movement."""
+        sockfd = ql.arch.regs.rdi
+
+        params = {"sockfd": sockfd}
+        record = self._record_syscall("accept", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("accept", record)
+
+    def hook_sys_accept4(self, ql: Any, *args) -> None:
+        """Hook accept4 syscall - potential lateral movement."""
+        sockfd = ql.arch.regs.rdi
+        flags = ql.arch.regs.rsi
+
+        params = {"sockfd": sockfd, "flags": flags}
+        record = self._record_syscall("accept4", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("accept4", record)
+
+    def hook_sys_access(self, ql: Any, *args) -> None:
+        """Hook access syscall - file discovery and persistence detection."""
+        pathname_addr = ql.arch.regs.rdi
+        mode = ql.arch.regs.rsi
+
+        pathname = self._read_string(pathname_addr)
+        params = {"pathname": pathname, "mode": mode}
+        record = self._record_syscall("access", params, return_value=None)
+
+        # Check for persistence paths (cron, systemd, shell config)
+        if pathname:
+            technique_id, technique_name, tactic, confidence = self._detect_technique("access", params)
+            if technique_id != "unknown":
+                self.session.add_technique_evidence(
+                    technique_id=technique_id,
+                    technique_name=technique_name,
+                    tactic=tactic,
+                    confidence=self._score_to_label(confidence),
+                    confidence_score=confidence,
+                    api_call=record,
+                )
+
+        self._pending_syscalls[record.sequence_number] = ("access", record)
+
+        if pathname:
+            self.session.add_string(pathname)
+
+    def hook_sys_faccessat(self, ql: Any, *args) -> None:
+        """Hook faccessat syscall - file discovery and persistence detection."""
+        dirfd = ql.arch.regs.rdi
+        pathname_addr = ql.arch.regs.rsi
+        mode = ql.arch.regs.rdx
+
+        pathname = self._read_string(pathname_addr)
+        params = {"dirfd": dirfd, "pathname": pathname, "mode": mode}
+        record = self._record_syscall("faccessat", params, return_value=None)
+
+        self._pending_syscalls[record.sequence_number] = ("faccessat", record)
+
+        if pathname:
+            self.session.add_string(pathname)
+
+    def hook_sys_stat(self, ql: Any, *args) -> None:
+        """Hook stat syscall - file discovery."""
+        pathname_addr = ql.arch.regs.rdi
+        statbuf_addr = ql.arch.regs.rsi
+
+        pathname = self._read_string(pathname_addr)
+        params = {"pathname": pathname, "statbuf": hex(statbuf_addr)}
+        record = self._record_syscall("stat", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("stat", record)
+
+        if pathname:
+            self.session.add_string(pathname)
+
+    def hook_sys_fstat(self, ql: Any, *args) -> None:
+        """Hook fstat syscall - file descriptor stat."""
+        fd = ql.arch.regs.rdi
+        statbuf_addr = ql.arch.regs.rsi
+
+        params = {"fd": fd, "statbuf": hex(statbuf_addr)}
+        record = self._record_syscall("fstat", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("fstat", record)
+
+    def hook_sys_lstat(self, ql: Any, *args) -> None:
+        """Hook lstat syscall - symlink stat."""
+        pathname_addr = ql.arch.regs.rdi
+        statbuf_addr = ql.arch.regs.rsi
+
+        pathname = self._read_string(pathname_addr)
+        params = {"pathname": pathname, "statbuf": hex(statbuf_addr)}
+        record = self._record_syscall("lstat", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("lstat", record)
+
+        if pathname:
+            self.session.add_string(pathname)
+
+    def hook_sys_statx(self, ql: Any, *args) -> None:
+        """Hook statx syscall - file discovery."""
+        dirfd = ql.arch.regs.rdi
+        pathname_addr = ql.arch.regs.rsi
+        flags = ql.arch.regs.rdx
+        mask = ql.arch.regs.r10
+        statxbuf_addr = ql.arch.regs.r8
+
+        pathname = self._read_string(pathname_addr)
+        params = {"dirfd": dirfd, "pathname": pathname, "flags": flags, "mask": mask, "statxbuf": hex(statxbuf_addr)}
+        record = self._record_syscall("statx", params, return_value=None)
+        self._pending_syscalls[record.sequence_number] = ("statx", record)
+
+        if pathname:
+            self.session.add_string(pathname)
 
     @staticmethod
     def _score_to_label(score: float) -> str:

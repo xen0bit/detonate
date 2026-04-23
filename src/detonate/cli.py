@@ -1,10 +1,12 @@
 """CLI entry point using typer."""
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import structlog
 import typer
 from typing_extensions import Annotated
 
@@ -138,6 +140,8 @@ def analyze(
                 result.sample_path,
                 result.findings,
                 result.api_calls,
+                infrastructure=result.infrastructure,
+                vulnerabilities=result.vulnerabilities,
             )
             import stix2.serialization
             stix_path.write_text(stix2.serialization.serialize(stix_bundle, pretty=True))
@@ -335,12 +339,41 @@ def export(
     session_id: str = typer.Argument(..., help="Session ID of analysis to export"),
     output_format: str = typer.Option("report", "-f", "--format", help="Output format: navigator, stix, report, log"),
     output_path: str = typer.Option("-", "-o", "--output", help="Output file path (use '-' for stdout)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """
     Export analysis results to various formats.
     
     Supported formats: navigator, stix, report, log
     """
+    # Setup logging to stderr so it doesn't interfere with output
+    import logging
+    import sys
+    
+    # Suppress all logging by default (tests expect clean output)
+    # Only show logs if --verbose is explicitly set
+    log_level = "DEBUG" if verbose else "CRITICAL"
+    
+    # Configure standard logging to stderr
+    logging.basicConfig(
+        format="%(levelname)s: %(message)s",
+        level=getattr(logging, log_level.upper(), logging.CRITICAL),
+        force=True,  # Force reconfiguration
+    )
+    
+    # Configure structlog to use stderr with CRITICAL level
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.dev.ConsoleRenderer(colors=True),
+        ],
+        logger_factory=structlog.PrintLoggerFactory(sys.stderr),
+        cache_logger_on_first_use=True,
+        wrapper_class=structlog.make_filtering_bound_logger(50),  # CRITICAL only
+    )
+    
     settings = get_settings()
     db = DatabaseStore(settings.database)
 
@@ -481,6 +514,8 @@ def export(
                 findings=findings,
                 api_calls=api_calls,
                 analysis_date=analysis_date,
+                infrastructure=[],  # Infrastructure not yet stored in DB
+                vulnerabilities=[],  # CVE lookup not yet stored in DB
             )
             # Use stix2's serialize method for proper JSON serialization
             import stix2.serialization
@@ -575,6 +610,8 @@ def export(
                 findings=findings,
                 api_calls=api_calls,
                 strings=strings,
+                infrastructure=[],  # Infrastructure not yet stored in DB
+                vulnerabilities=[],  # CVE lookup not yet stored in DB
             )
 
             output_text = generate_report(result)

@@ -6,6 +6,7 @@ from typing import Any
 import structlog
 
 from ..session import AnalysisSession, APICallRecord
+from ...utils.cve_lookup import lookup_cve
 
 log = structlog.get_logger()
 
@@ -37,6 +38,9 @@ class WindowsHooks:
             "ShellExecuteA": self.hook_ShellExecuteA,
             "ShellExecuteW": self.hook_ShellExecuteW,
             "WinExec": self.hook_WinExec,
+            "CreateProcessWithLogonW": self.hook_CreateProcessWithLogonW,
+            "CreateProcessWithTokenW": self.hook_CreateProcessWithTokenW,
+            "ShellExecuteExW": self.hook_ShellExecuteExW,
             # Process injection
             "VirtualAllocEx": self.hook_VirtualAllocEx,
             "WriteProcessMemory": self.hook_WriteProcessMemory,
@@ -49,19 +53,32 @@ class WindowsHooks:
             "RegQueryValueExA": self.hook_RegQueryValueExA,
             "RegSetValueExA": self.hook_RegSetValueExA,
             "RegCreateKeyExA": self.hook_RegCreateKeyExA,
+            "RegCreateKeyExW": self.hook_RegCreateKeyExW,
             # File operations
             "CreateFileA": self.hook_CreateFileA,
             "CreateFileW": self.hook_CreateFileW,
             "ReadFile": self.hook_ReadFile,
             "WriteFile": self.hook_WriteFile,
             "DeleteFileA": self.hook_DeleteFileA,
+            "DeleteFileW": self.hook_DeleteFileW,
+            "FindFirstFileA": self.hook_FindFirstFileA,
+            "FindFirstFileW": self.hook_FindFirstFileW,
+            "FindNextFileA": self.hook_FindNextFileA,
+            "SetFileTime": self.hook_SetFileTime,
+            "RemoveDirectoryA": self.hook_RemoveDirectoryA,
+            "RemoveDirectoryW": self.hook_RemoveDirectoryW,
             # Services
             "CreateServiceA": self.hook_CreateServiceA,
+            "CreateServiceW": self.hook_CreateServiceW,
             "StartServiceA": self.hook_StartServiceA,
+            "SchTasksCreate": self.hook_SchTasksCreate,
             # Network
             "InternetOpenA": self.hook_InternetOpenA,
             "InternetConnectA": self.hook_InternetConnectA,
+            "InternetOpenUrlA": self.hook_InternetOpenUrlA,
             "HttpOpenRequestA": self.hook_HttpOpenRequestA,
+            "HttpSendRequestA": self.hook_HttpSendRequestA,
+            "FtpPutFileA": self.hook_FtpPutFileA,
             "socket": self.hook_socket,
             "connect": self.hook_connect,
             # Crypto
@@ -70,6 +87,29 @@ class WindowsHooks:
             # Privilege
             "AdjustTokenPrivileges": self.hook_AdjustTokenPrivileges,
             "OpenProcessToken": self.hook_OpenProcessToken,
+            # Credential access
+            "CredEnumerateA": self.hook_CredEnumerateA,
+            "CredEnumerateW": self.hook_CredEnumerateW,
+            "CredReadA": self.hook_CredReadA,
+            "CredReadW": self.hook_CredReadW,
+            "SamIConnect": self.hook_SamIConnect,
+            "LsaOpenPolicy": self.hook_LsaOpenPolicy,
+            "LsaQueryInformationPolicy": self.hook_LsaQueryInformationPolicy,
+            # Discovery
+            "GetSystemInfo": self.hook_GetSystemInfo,
+            "GetVersionExA": self.hook_GetVersionExA,
+            "GetVersionExW": self.hook_GetVersionExW,
+            "NetShareEnum": self.hook_NetShareEnum,
+            "NetGetJoinInformation": self.hook_NetGetJoinInformation,
+            "DsGetDcNameW": self.hook_DsGetDcNameW,
+            # Lateral movement / Token manipulation
+            "WNetAddConnection2W": self.hook_WNetAddConnection2W,
+            "ImpersonateLoggedOnUser": self.hook_ImpersonateLoggedOnUser,
+            # Collection
+            "GetClipboardData": self.hook_GetClipboardData,
+            # Event log manipulation
+            "ClearEventLogA": self.hook_ClearEventLogA,
+            "BackupEventLogA": self.hook_BackupEventLogA,
             # DLL loading
             "LoadLibraryA": self.hook_LoadLibraryA,
             "LoadLibraryW": self.hook_LoadLibraryW,
@@ -329,7 +369,24 @@ class WindowsHooks:
         file_name = ql.mem.wstring(file_ptr) if file_ptr else ""
 
         params = {"lpFile": file_name}
-        self._record_api_call("ShellExecuteW", params)
+        record = self._record_api_call("ShellExecuteW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "ShellExecuteW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+        if file_name:
+            self.session.add_string(file_name)
 
     def hook_WinExec(self, ql: Any) -> None:
         """Hook WinExec."""
@@ -665,18 +722,66 @@ class WindowsHooks:
             )
 
     # File operation hooks
+    # CVE indicator patterns: file paths/registry keys mapped to CVE IDs
+    CVE_INDICATOR_PATTERNS: dict[str, str] = {
+        # Eternalblue/smb
+        "\\pipe\\srvsvc": "CVE-2017-0144",
+        "\\pipe\\browser": "CVE-2017-0144",
+        "\\pipe\\lanman": "CVE-2017-0144",
+        # PrintNightmare
+        "\\sysmon.sys": "CVE-2021-34527",
+        "\\spooler": "CVE-2021-34527",
+        "ntprint.dll": "CVE-2021-34527",
+        "printfilterpipeline": "CVE-2021-34527",
+        # zerologon
+        "netlogon": "CVE-2020-1472",
+        # noberus
+        "lsass.exe": "CVE-2024-30085",
+        # proxyshell
+        "proxyshell": "CVE-2021-34473",
+        # log4shell
+        "log4j": "CVE-2021-44228",
+        # shellshock
+        "bash": "CVE-2014-6271",
+        # bluekeep
+        "termdd": "CVE-2019-0708",
+        # smbghost
+        "smbv1": "CVE-2020-0796",
+        # petipotam
+        "petipotam": "CVE-2020-0688",
+        # exchange vulnerabilities
+        "owa": "CVE-2021-26855",
+        "ecp": "CVE-2021-26855",
+        # adobe vulnerabilities
+        "adobe": "CVE-2023-26369",
+        # chrome vulnerabilities
+        "chrome": "CVE-2023-2033",
+        # windows kernel
+        "ntoskrnl": "CVE-2023-36025",
+        "win32k": "CVE-2023-36025",
+        # crypto wallets (common target)
+        "wallet": "CVE-2023-4863",
+        "metamask": "CVE-2023-4863",
+        # sensitive system files
+        "sam": "CVE-2021-36934",
+        "system": "CVE-2021-36934",
+        "security": "CVE-2021-36934",
+    }
+
     def hook_CreateFileA(self, ql: Any) -> None:
-        """Hook CreateFileA."""
+        """
+        Hook CreateFileA with CVE detection.
+        
+        Detects file access patterns associated with known CVEs and
+        performs live CVE lookup via NVD API when enabled.
+        """
         lpFileName = ql.os.f_param_read(0)
         file_name = ql.mem.string(lpFileName) if lpFileName else ""
 
         params = {"lpFileName": file_name}
         record = self._record_api_call("CreateFileA", params)
 
-        # Extract strings of interest
-        if file_name:
-            self.session.add_string(file_name)
-
+        # Technique detection (existing logic)
         technique_id, technique_name, tactic, confidence = self._detect_technique(
             "CreateFileA", params
         )
@@ -690,6 +795,30 @@ class WindowsHooks:
                 confidence_score=confidence,
                 api_call=record,
             )
+
+        # CVE detection: check if file path matches known vulnerability indicators
+        if file_name:
+            file_name_lower = file_name.lower()
+            matched_cve_ids: set[str] = set()
+            
+            for pattern, cve_id in self.CVE_INDICATOR_PATTERNS.items():
+                if pattern.lower() in file_name_lower:
+                    matched_cve_ids.add(cve_id)
+            
+            # Perform CVE lookup for each matched CVE
+            for cve_id in matched_cve_ids:
+                try:
+                    cve_data = lookup_cve(cve_id)
+                    if cve_data:
+                        self.session.add_vulnerability(
+                            cve_id=cve_id,
+                            cve_data=cve_data,
+                            related_api_call=record,
+                            technique_id=technique_id if technique_id != "unknown" else None,
+                        )
+                except Exception:
+                    # Fail gracefully if NVD API unavailable
+                    pass
 
     def hook_CreateFileW(self, ql: Any) -> None:
         """Hook CreateFileW (Unicode)."""
@@ -708,7 +837,21 @@ class WindowsHooks:
         nNumberOfBytesToRead = ql.os.f_param_read(2)
 
         params = {"hFile": hex(hFile) if hFile else "0x0", "nNumberOfBytesToRead": nNumberOfBytesToRead}
-        self._record_api_call("ReadFile", params)
+        record = self._record_api_call("ReadFile", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "ReadFile", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
 
     def hook_WriteFile(self, ql: Any) -> None:
         """Hook WriteFile."""
@@ -716,7 +859,21 @@ class WindowsHooks:
         nNumberOfBytesToWrite = ql.os.f_param_read(2)
 
         params = {"hFile": hex(hFile) if hFile else "0x0", "nNumberOfBytesToWrite": nNumberOfBytesToWrite}
-        self._record_api_call("WriteFile", params)
+        record = self._record_api_call("WriteFile", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "WriteFile", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
 
     def hook_DeleteFileA(self, ql: Any) -> None:
         """Hook DeleteFileA."""
@@ -807,12 +964,20 @@ class WindowsHooks:
             )
 
     def hook_InternetConnectA(self, ql: Any) -> None:
-        """Hook InternetConnectA."""
+        """Hook InternetConnectA for C2 infrastructure detection."""
         lpszServerName = ql.os.f_param_read(1)
         server_name = ql.mem.string(lpszServerName) if lpszServerName else ""
 
         params = {"lpszServerName": server_name}
         record = self._record_api_call("InternetConnectA", params)
+
+        # Track C2 infrastructure
+        if server_name and not server_name.startswith("127."):
+            self.session.add_infrastructure(
+                name=f"C2 Server: {server_name}",
+                infrastructure_types=["command-and-control"],
+                related_api_call=record,
+            )
 
         technique_id, technique_name, tactic, confidence = self._detect_technique(
             "InternetConnectA", params
@@ -829,7 +994,7 @@ class WindowsHooks:
             )
 
     def hook_HttpOpenRequestA(self, ql: Any) -> None:
-        """Hook HttpOpenRequestA."""
+        """Hook HttpOpenRequestA for C2 infrastructure detection."""
         lpszVerb = ql.os.f_param_read(1)
         lpszObjectName = ql.os.f_param_read(2)
         verb = ql.mem.string(lpszVerb) if lpszVerb else ""
@@ -837,6 +1002,16 @@ class WindowsHooks:
 
         params = {"lpszVerb": verb, "lpszObjectName": object_name}
         record = self._record_api_call("HttpOpenRequestA", params)
+
+        # Track C2 infrastructure from object name (URL path)
+        # Include verb for richer context (e.g., "POST /beacon")
+        if object_name and ("/" in object_name or "." in object_name):
+            infra_name = f"C2 Endpoint: {verb} {object_name}" if verb else f"C2 Endpoint: {object_name}"
+            self.session.add_infrastructure(
+                name=infra_name,
+                infrastructure_types=["command-and-control"],
+                related_api_call=record,
+            )
 
         technique_id, technique_name, tactic, confidence = self._detect_technique(
             "HttpOpenRequestA", params
@@ -875,12 +1050,69 @@ class WindowsHooks:
                 api_call=record,
             )
 
+    def _parse_sockaddr(self, addr_ptr: int, addrlen: int) -> str:
+        """
+        Parse sockaddr_in/sockaddr_in6 structure to extract IP:port.
+        
+        Args:
+            addr_ptr: Pointer to sockaddr structure
+            addrlen: Length of address structure
+            
+        Returns:
+            String representation like "192.168.1.1:443" or "unknown"
+        """
+        if addr_ptr == 0 or addrlen < 2:
+            return "unknown"
+        
+        try:
+            # First 2 bytes are address family (AF_INET=2, AF_INET6=10)
+            family_bytes = self.ql.mem.read(addr_ptr, 2)
+            family = int.from_bytes(family_bytes, "little")
+            
+            if family == 2:  # AF_INET
+                # sockaddr_in: sin_port (2), sin_addr (4), rest ignored
+                # Port at offset 2, IP at offset 4
+                port_bytes = self.ql.mem.read(addr_ptr + 2, 2)
+                port = int.from_bytes(port_bytes, "big")  # Network byte order
+                ip_bytes = self.ql.mem.read(addr_ptr + 4, 4)
+                ip = ".".join(str(b) for b in ip_bytes)
+                return f"{ip}:{port}"
+            elif family == 10:  # AF_INET6
+                # sockaddr_in6: sin6_port (2), sin6_flowinfo (4), sin6_addr (16), sin6_scope_id (4)
+                port_bytes = self.ql.mem.read(addr_ptr + 2, 2)
+                port = int.from_bytes(port_bytes, "big")
+                ip_bytes = self.ql.mem.read(addr_ptr + 8, 16)
+                ip = ":".join(f"{b:02x}" for b in ip_bytes)
+                return f"[{ip}]:{port}"
+        except Exception:
+            pass
+        
+        return "unknown"
+
     def hook_connect(self, ql: Any) -> None:
-        """Hook connect."""
+        """Hook connect for C2 infrastructure detection."""
         sockfd = ql.os.f_param_read(0)
-        # Address parsing would require more complex memory reading
-        params = {"sockfd": sockfd}
+        addr_ptr = ql.os.f_param_read(1)
+        addrlen = ql.os.f_param_read(2)
+        
+        # Parse sockaddr to extract destination IP:port
+        dest_addr = self._parse_sockaddr(addr_ptr, addrlen)
+        params = {"sockfd": sockfd, "address": dest_addr}
         record = self._record_api_call("connect", params)
+
+        # Track C2 infrastructure (exclude localhost)
+        if dest_addr and dest_addr != "unknown":
+            is_localhost = (
+                dest_addr.startswith("127.") or 
+                dest_addr.startswith("[::1]") or
+                "::00:00:00:01" in dest_addr
+            )
+            if not is_localhost:
+                self.session.add_infrastructure(
+                    name=f"C2 Server: {dest_addr}",
+                    infrastructure_types=["command-and-control"],
+                    related_api_call=record,
+                )
 
         technique_id, technique_name, tactic, confidence = self._detect_technique(
             "connect", params
@@ -1115,6 +1347,752 @@ class WindowsHooks:
 
         technique_id, technique_name, tactic, confidence = self._detect_technique(
             "NtSetValueKey", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    # ========================================================================
+    # NEW CREDENTIAL ACCESS HOOKS
+    # ========================================================================
+    def hook_CredEnumerateA(self, ql: Any) -> None:
+        """Hook CredEnumerateA for credential dumping detection."""
+        Target_ptr = ql.os.f_param_read(0)
+        target = ql.mem.string(Target_ptr) if Target_ptr else ""
+
+        params = {"Target": target}
+        record = self._record_api_call("CredEnumerateA", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "CredEnumerateA", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_CredEnumerateW(self, ql: Any) -> None:
+        """Hook CredEnumerateW (Unicode)."""
+        Target_ptr = ql.os.f_param_read(0)
+        target = ql.mem.wstring(Target_ptr) if Target_ptr else ""
+
+        params = {"Target": target}
+        record = self._record_api_call("CredEnumerateW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "CredEnumerateW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_CredReadA(self, ql: Any) -> None:
+        """Hook CredReadA."""
+        Target_ptr = ql.os.f_param_read(0)
+        target = ql.mem.string(Target_ptr) if Target_ptr else ""
+
+        params = {"Target": target}
+        record = self._record_api_call("CredReadA", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "CredReadA", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_CredReadW(self, ql: Any) -> None:
+        """Hook CredReadW (Unicode)."""
+        Target_ptr = ql.os.f_param_read(0)
+        target = ql.mem.wstring(Target_ptr) if Target_ptr else ""
+
+        params = {"Target": target}
+        record = self._record_api_call("CredReadW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "CredReadW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_SamIConnect(self, ql: Any) -> None:
+        """Hook SamIConnect for SAM database access detection."""
+        params = {"api": "SamIConnect"}
+        record = self._record_api_call("SamIConnect", params)
+
+        technique_id = "T1003.002"
+        technique_name = "OS Credential Dumping: Security Account Manager"
+        tactic = "credential-access"
+
+        self.session.add_technique_evidence(
+            technique_id=technique_id,
+            technique_name=technique_name,
+            tactic=tactic,
+            confidence="high",
+            confidence_score=0.9,
+            api_call=record,
+        )
+
+    def hook_LsaOpenPolicy(self, ql: Any) -> None:
+        """Hook LsaOpenPolicy for LSA secrets access detection."""
+        params = {"api": "LsaOpenPolicy"}
+        record = self._record_api_call("LsaOpenPolicy", params)
+
+        technique_id = "T1003.004"
+        technique_name = "OS Credential Dumping: LSA Secrets"
+        tactic = "credential-access"
+
+        self.session.add_technique_evidence(
+            technique_id=technique_id,
+            technique_name=technique_name,
+            tactic=tactic,
+            confidence="high",
+            confidence_score=0.85,
+            api_call=record,
+        )
+
+    def hook_LsaQueryInformationPolicy(self, ql: Any) -> None:
+        """Hook LsaQueryInformationPolicy."""
+        params = {"api": "LsaQueryInformationPolicy"}
+        record = self._record_api_call("LsaQueryInformationPolicy", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "LsaQueryInformationPolicy", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    # ========================================================================
+    # NEW DISCOVERY HOOKS
+    # ========================================================================
+    def hook_GetSystemInfo(self, ql: Any) -> None:
+        """Hook GetSystemInfo for system information discovery."""
+        params = {"api": "GetSystemInfo"}
+        record = self._record_api_call("GetSystemInfo", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "GetSystemInfo", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_GetVersionExA(self, ql: Any) -> None:
+        """Hook GetVersionExA."""
+        params = {"api": "GetVersionExA"}
+        record = self._record_api_call("GetVersionExA", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "GetVersionExA", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_GetVersionExW(self, ql: Any) -> None:
+        """Hook GetVersionExW (Unicode)."""
+        params = {"api": "GetVersionExW"}
+        record = self._record_api_call("GetVersionExW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "GetVersionExW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_NetShareEnum(self, ql: Any) -> None:
+        """Hook NetShareEnum for network share discovery."""
+        params = {"api": "NetShareEnum"}
+        record = self._record_api_call("NetShareEnum", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "NetShareEnum", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_NetGetJoinInformation(self, ql: Any) -> None:
+        """Hook NetGetJoinInformation."""
+        params = {"api": "NetGetJoinInformation"}
+        record = self._record_api_call("NetGetJoinInformation", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "NetGetJoinInformation", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_DsGetDcNameW(self, ql: Any) -> None:
+        """Hook DsGetDcNameW for domain controller discovery."""
+        params = {"api": "DsGetDcNameW"}
+        record = self._record_api_call("DsGetDcNameW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "DsGetDcNameW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    # ========================================================================
+    # NEW LATERAL MOVEMENT HOOKS
+    # ========================================================================
+    def hook_WNetAddConnection2W(self, ql: Any) -> None:
+        """Hook WNetAddConnection2W for SMB share connection."""
+        lpRemoteName_ptr = ql.os.f_param_read(0)
+        lpRemoteName = ql.mem.wstring(lpRemoteName_ptr) if lpRemoteName_ptr else ""
+
+        params = {"lpRemoteName": lpRemoteName}
+        record = self._record_api_call("WNetAddConnection2W", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "WNetAddConnection2W", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_CreateProcessWithLogonW(self, ql: Any) -> None:
+        """Hook CreateProcessWithLogonW for lateral movement via credentials."""
+        lpUsername_ptr = ql.os.f_param_read(0)
+        lpCommandLine_ptr = ql.os.f_param_read(2)
+
+        username = ql.mem.wstring(lpUsername_ptr) if lpUsername_ptr else ""
+        cmd_line = ql.mem.wstring(lpCommandLine_ptr) if lpCommandLine_ptr else ""
+
+        params = {"lpUsername": username, "lpCommandLine": cmd_line}
+        record = self._record_api_call("CreateProcessWithLogonW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "CreateProcessWithLogonW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_ImpersonateLoggedOnUser(self, ql: Any) -> None:
+        """Hook ImpersonateLoggedOnUser for token impersonation."""
+        hToken = ql.os.f_param_read(0)
+
+        params = {"hToken": hex(hToken) if hToken else "0x0"}
+        record = self._record_api_call("ImpersonateLoggedOnUser", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "ImpersonateLoggedOnUser", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    # ========================================================================
+    # NEW PERSISTENCE HOOKS
+    # ========================================================================
+    def hook_SchTasksCreate(self, ql: Any) -> None:
+        """Hook SchTasksCreate for scheduled task persistence."""
+        TaskName_ptr = ql.os.f_param_read(0)
+        task_name = ql.mem.string(TaskName_ptr) if TaskName_ptr else ""
+
+        params = {"TaskName": task_name}
+        record = self._record_api_call("SchTasksCreate", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "SchTasksCreate", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_RegCreateKeyExW(self, ql: Any) -> None:
+        """Hook RegCreateKeyExW (Unicode)."""
+        lpSubKey_ptr = ql.os.f_param_read(1)
+        sub_key = ql.mem.wstring(lpSubKey_ptr) if lpSubKey_ptr else ""
+
+        params = {"lpSubKey": sub_key}
+        record = self._record_api_call("RegCreateKeyExW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "RegCreateKeyExW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_CreateServiceW(self, ql: Any) -> None:
+        """Hook CreateServiceW (Unicode)."""
+        lpServiceName_ptr = ql.os.f_param_read(2)
+        service_name = ql.mem.wstring(lpServiceName_ptr) if lpServiceName_ptr else ""
+
+        params = {"lpServiceName": service_name}
+        record = self._record_api_call("CreateServiceW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "CreateServiceW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    # ========================================================================
+    # NEW DEFENSE EVASION HOOKS
+    # ========================================================================
+    def hook_SetFileTime(self, ql: Any) -> None:
+        """Hook SetFileTime for timestomping detection."""
+        hFile = ql.os.f_param_read(0)
+
+        params = {"hFile": hex(hFile) if hFile else "0x0"}
+        record = self._record_api_call("SetFileTime", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "SetFileTime", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_RemoveDirectoryA(self, ql: Any) -> None:
+        """Hook RemoveDirectoryA."""
+        lpPathName_ptr = ql.os.f_param_read(0)
+        path_name = ql.mem.string(lpPathName_ptr) if lpPathName_ptr else ""
+
+        params = {"lpPathName": path_name}
+        record = self._record_api_call("RemoveDirectoryA", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "RemoveDirectoryA", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_RemoveDirectoryW(self, ql: Any) -> None:
+        """Hook RemoveDirectoryW (Unicode)."""
+        lpPathName_ptr = ql.os.f_param_read(0)
+        path_name = ql.mem.wstring(lpPathName_ptr) if lpPathName_ptr else ""
+
+        params = {"lpPathName": path_name}
+        record = self._record_api_call("RemoveDirectoryW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "RemoveDirectoryW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_ClearEventLogA(self, ql: Any) -> None:
+        """Hook ClearEventLogA for event log clearing detection."""
+        hEventLog = ql.os.f_param_read(0)
+
+        params = {"hEventLog": hex(hEventLog) if hEventLog else "0x0"}
+        record = self._record_api_call("ClearEventLogA", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "ClearEventLogA", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_BackupEventLogA(self, ql: Any) -> None:
+        """Hook BackupEventLogA."""
+        hEventLog = ql.os.f_param_read(0)
+
+        params = {"hEventLog": hex(hEventLog) if hEventLog else "0x0"}
+        record = self._record_api_call("BackupEventLogA", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "BackupEventLogA", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    # ========================================================================
+    # NEW EXECUTION HOOKS
+    # ========================================================================
+    def hook_CreateProcessWithTokenW(self, ql: Any) -> None:
+        """Hook CreateProcessWithTokenW."""
+        lpCommandLine_ptr = ql.os.f_param_read(1)
+        cmd_line = ql.mem.wstring(lpCommandLine_ptr) if lpCommandLine_ptr else ""
+
+        params = {"lpCommandLine": cmd_line}
+        record = self._record_api_call("CreateProcessWithTokenW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "CreateProcessWithTokenW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_ShellExecuteExW(self, ql: Any) -> None:
+        """Hook ShellExecuteExW (Unicode)."""
+        lpFile_ptr = ql.os.f_param_read(1)
+        file_name = ql.mem.wstring(lpFile_ptr) if lpFile_ptr else ""
+
+        params = {"lpFile": file_name}
+        record = self._record_api_call("ShellExecuteExW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "ShellExecuteExW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    # ========================================================================
+    # NEW COLLECTION HOOKS
+    # ========================================================================
+    def hook_FindFirstFileA(self, ql: Any) -> None:
+        """Hook FindFirstFileA."""
+        lpFileName_ptr = ql.os.f_param_read(0)
+        file_name = ql.mem.string(lpFileName_ptr) if lpFileName_ptr else ""
+
+        params = {"lpFileName": file_name}
+        record = self._record_api_call("FindFirstFileA", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "FindFirstFileA", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_FindFirstFileW(self, ql: Any) -> None:
+        """Hook FindFirstFileW (Unicode)."""
+        lpFileName_ptr = ql.os.f_param_read(0)
+        file_name = ql.mem.wstring(lpFileName_ptr) if lpFileName_ptr else ""
+
+        params = {"lpFileName": file_name}
+        record = self._record_api_call("FindFirstFileW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "FindFirstFileW", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_FindNextFileA(self, ql: Any) -> None:
+        """Hook FindNextFileA."""
+        hFindFile = ql.os.f_param_read(0)
+
+        params = {"hFindFile": hex(hFindFile) if hFindFile else "0x0"}
+        record = self._record_api_call("FindNextFileA", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "FindNextFileA", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_GetClipboardData(self, ql: Any) -> None:
+        """Hook GetClipboardData for clipboard data collection."""
+        uFormat = ql.os.f_param_read(0)
+
+        params = {"uFormat": uFormat}
+        record = self._record_api_call("GetClipboardData", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "GetClipboardData", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    # ========================================================================
+    # NEW EXFILTRATION HOOKS
+    # ========================================================================
+    def hook_InternetOpenUrlA(self, ql: Any) -> None:
+        """Hook InternetOpenUrlA."""
+        lpszUrl_ptr = ql.os.f_param_read(1)
+        url = ql.mem.string(lpszUrl_ptr) if lpszUrl_ptr else ""
+
+        params = {"lpszUrl": url}
+        record = self._record_api_call("InternetOpenUrlA", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "InternetOpenUrlA", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_HttpSendRequestA(self, ql: Any) -> None:
+        """Hook HttpSendRequestA."""
+        lpszHeaders_ptr = ql.os.f_param_read(1)
+        headers = ql.mem.string(lpszHeaders_ptr) if lpszHeaders_ptr else ""
+
+        params = {"lpszHeaders": headers}
+        record = self._record_api_call("HttpSendRequestA", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "HttpSendRequestA", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    def hook_FtpPutFileA(self, ql: Any) -> None:
+        """Hook FtpPutFileA for FTP exfiltration detection."""
+        lpszLocalFile_ptr = ql.os.f_param_read(1)
+        lpszNewRemoteFile_ptr = ql.os.f_param_read(2)
+
+        local_file = ql.mem.string(lpszLocalFile_ptr) if lpszLocalFile_ptr else ""
+        remote_file = ql.mem.string(lpszNewRemoteFile_ptr) if lpszNewRemoteFile_ptr else ""
+
+        params = {"lpszLocalFile": local_file, "lpszNewRemoteFile": remote_file}
+        record = self._record_api_call("FtpPutFileA", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "FtpPutFileA", params
+        )
+
+        if technique_id != "unknown":
+            self.session.add_technique_evidence(
+                technique_id=technique_id,
+                technique_name=technique_name,
+                tactic=tactic,
+                confidence=self._score_to_label(confidence),
+                confidence_score=confidence,
+                api_call=record,
+            )
+
+    # ========================================================================
+    # ADDITIONAL IMPACT HOOKS
+    # ========================================================================
+    def hook_DeleteFileW(self, ql: Any) -> None:
+        """Hook DeleteFileW (Unicode)."""
+        lpFileName_ptr = ql.os.f_param_read(0)
+        file_name = ql.mem.wstring(lpFileName_ptr) if lpFileName_ptr else ""
+
+        params = {"lpFileName": file_name}
+        record = self._record_api_call("DeleteFileW", params)
+
+        technique_id, technique_name, tactic, confidence = self._detect_technique(
+            "DeleteFileW", params
         )
 
         if technique_id != "unknown":

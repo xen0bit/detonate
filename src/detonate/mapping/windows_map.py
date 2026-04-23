@@ -388,4 +388,313 @@ API_TO_TECHNIQUE: dict = {
         "tactic": "collection",
         "confidence": 0.3,
     },
+    # ========================================================================
+    # CREDENTIAL ACCESS APIs (NEW)
+    # ========================================================================
+    "CredEnumerateA": {
+        "technique_id": "T1003.001",
+        "technique_name": "OS Credential Dumping: LSASS Memory",
+        "tactic": "credential-access",
+        "confidence": 0.85,
+        "param_checks": {
+            "Target": {
+                "Vault": {
+                    "id": "T1003.001",
+                    "name": "OS Credential Dumping: LSASS Memory",
+                    "tactic": "credential-access",
+                    "confidence": 0.95,
+                }
+            }
+        },
+    },
+    "CredEnumerateW": {
+        "technique_id": "T1003.001",
+        "technique_name": "OS Credential Dumping: LSASS Memory",
+        "tactic": "credential-access",
+        "confidence": 0.85,
+    },
+    "CredReadA": {
+        "technique_id": "T1003.001",
+        "technique_name": "OS Credential Dumping: LSASS Memory",
+        "tactic": "credential-access",
+        "confidence": 0.8,
+    },
+    "CredReadW": {
+        "technique_id": "T1003.001",
+        "technique_name": "OS Credential Dumping: LSASS Memory",
+        "tactic": "credential-access",
+        "confidence": 0.8,
+    },
+    "SamIConnect": {
+        "technique_id": "T1003.002",
+        "technique_name": "OS Credential Dumping: Security Account Manager",
+        "tactic": "credential-access",
+        "confidence": 0.9,
+    },
+    "LsaOpenPolicy": {
+        "technique_id": "T1003.004",
+        "technique_name": "OS Credential Dumping: LSA Secrets",
+        "tactic": "credential-access",
+        "confidence": 0.85,
+    },
+    "LsaQueryInformationPolicy": {
+        "technique_id": "T1003.004",
+        "technique_name": "OS Credential Dumping: LSA Secrets",
+        "tactic": "credential-access",
+        "confidence": 0.8,
+    },
+    # ========================================================================
+    # DISCOVERY APIs (NEW)
+    # ========================================================================
+    "GetSystemInfo": {
+        "technique_id": "T1082",
+        "technique_name": "System Information Discovery",
+        "tactic": "discovery",
+        "confidence": 0.6,
+    },
+    "GetVersionExA": {
+        "technique_id": "T1082",
+        "technique_name": "System Information Discovery",
+        "tactic": "discovery",
+        "confidence": 0.6,
+    },
+    "GetVersionExW": {
+        "technique_id": "T1082",
+        "technique_name": "System Information Discovery",
+        "tactic": "discovery",
+        "confidence": 0.6,
+    },
+    "NetShareEnum": {
+        "technique_id": "T1135",
+        "technique_name": "Network Share Discovery",
+        "tactic": "discovery",
+        "confidence": 0.85,
+    },
+    "NetGetJoinInformation": {
+        "technique_id": "T1082",
+        "technique_name": "System Information Discovery",
+        "tactic": "discovery",
+        "confidence": 0.7,
+    },
+    "DsGetDcNameW": {
+        "technique_id": "T1082",
+        "technique_name": "System Information Discovery",
+        "tactic": "discovery",
+        "confidence": 0.75,
+    },
+    # ========================================================================
+    # LATERAL MOVEMENT APIs (NEW)
+    # ========================================================================
+    "WNetAddConnection2W": {
+        "technique_id": "T1021.002",
+        "technique_name": "Remote Services: SMB/Windows Admin Shares",
+        "tactic": "lateral-movement",
+        "confidence": 0.85,
+        "param_checks": {
+            "lpRemoteName": {
+                "\\\\": {
+                    "id": "T1021.002",
+                    "name": "Remote Services: SMB/Windows Admin Shares",
+                    "tactic": "lateral-movement",
+                    "confidence": 0.9,
+                }
+            }
+        },
+    },
+    "CreateProcessWithLogonW": {
+        "technique_id": "T1021.003",
+        "technique_name": "Remote Services: Distributed Component Object Model",
+        "tactic": "lateral-movement",
+        "confidence": 0.9,
+    },
+    "ImpersonateLoggedOnUser": {
+        "technique_id": "T1134.001",
+        "technique_name": "Access Token Manipulation: Token Impersonation/Theft",
+        "tactic": "defense-evasion",
+        "confidence": 0.85,
+    },
+    # ========================================================================
+    # PERSISTENCE APIs (NEW)
+    # ========================================================================
+    "SchTasksCreate": {
+        "technique_id": "T1053.005",
+        "technique_name": "Scheduled Task/Job: Scheduled Task",
+        "tactic": "persistence",
+        "confidence": 0.9,
+        "param_checks": {
+            "TaskName": {
+                "run": {
+                    "id": "T1053.005",
+                    "name": "Scheduled Task/Job: Scheduled Task",
+                    "tactic": "persistence",
+                    "confidence": 0.95,
+                }
+            }
+        },
+    },
+    "RegCreateKeyExW": {
+        "technique_id": "T1547.001",
+        "technique_name": "Registry Run Keys / Startup Folder",
+        "tactic": "persistence",
+        "confidence": 0.7,
+        "param_checks": {
+            "lpSubKey": {
+                "currentversion\\run": {
+                    "id": "T1547.001",
+                    "name": "Registry Run Keys / Startup Folder",
+                    "tactic": "persistence",
+                    "confidence": 0.9,
+                },
+                "currentversion\\runonce": {
+                    "id": "T1547.001",
+                    "name": "Registry Run Keys / Startup Folder",
+                    "tactic": "persistence",
+                    "confidence": 0.9,
+                }
+            }
+        },
+    },
+    "CreateServiceW": {
+        "technique_id": "T1543.003",
+        "technique_name": "Windows Service",
+        "tactic": "persistence",
+        "confidence": 0.85,
+    },
+    # ========================================================================
+    # DEFENSE EVASION APIs (NEW)
+    # ========================================================================
+    "SetFileTime": {
+        "technique_id": "T1070.003",
+        "technique_name": "Clear Command History",
+        "tactic": "defense-evasion",
+        "confidence": 0.7,
+    },
+    "RemoveDirectoryA": {
+        "technique_id": "T1070.004",
+        "technique_name": "File Deletion",
+        "tactic": "defense-evasion",
+        "confidence": 0.6,
+    },
+    "RemoveDirectoryW": {
+        "technique_id": "T1070.004",
+        "technique_name": "File Deletion",
+        "tactic": "defense-evasion",
+        "confidence": 0.6,
+    },
+    "ClearEventLogA": {
+        "technique_id": "T1070.001",
+        "technique_name": "Clear Windows Event Logs",
+        "tactic": "defense-evasion",
+        "confidence": 0.9,
+    },
+    "BackupEventLogA": {
+        "technique_id": "T1070.001",
+        "technique_name": "Clear Windows Event Logs",
+        "tactic": "defense-evasion",
+        "confidence": 0.85,
+    },
+    # ========================================================================
+    # EXECUTION APIs (NEW)
+    # ========================================================================
+    "CreateProcessWithTokenW": {
+        "technique_id": "T1059.003",
+        "technique_name": "Windows Command Shell",
+        "tactic": "execution",
+        "confidence": 0.7,
+        "param_checks": {
+            "lpCommandLine": {
+                "powershell": {
+                    "id": "T1059.001",
+                    "name": "PowerShell",
+                    "tactic": "execution",
+                    "confidence": 0.95,
+                },
+                "cmd": {
+                    "id": "T1059.003",
+                    "name": "Windows Command Shell",
+                    "tactic": "execution",
+                    "confidence": 0.9,
+                }
+            }
+        },
+    },
+    "ShellExecuteExW": {
+        "technique_id": "T1059.003",
+        "technique_name": "Windows Command Shell",
+        "tactic": "execution",
+        "confidence": 0.6,
+        "param_checks": {
+            "lpFile": {
+                "powershell": {
+                    "id": "T1059.001",
+                    "name": "PowerShell",
+                    "tactic": "execution",
+                    "confidence": 0.95,
+                },
+                "cmd": {
+                    "id": "T1059.003",
+                    "name": "Windows Command Shell",
+                    "tactic": "execution",
+                    "confidence": 0.9,
+                }
+            }
+        },
+    },
+    # ========================================================================
+    # COLLECTION APIs (NEW)
+    # ========================================================================
+    "FindFirstFileA": {
+        "technique_id": "T1083",
+        "technique_name": "File and Directory Discovery",
+        "tactic": "discovery",
+        "confidence": 0.5,
+    },
+    "FindFirstFileW": {
+        "technique_id": "T1083",
+        "technique_name": "File and Directory Discovery",
+        "tactic": "discovery",
+        "confidence": 0.5,
+    },
+    "FindNextFileA": {
+        "technique_id": "T1083",
+        "technique_name": "File and Directory Discovery",
+        "tactic": "discovery",
+        "confidence": 0.4,
+    },
+    "GetClipboardData": {
+        "technique_id": "T1115",
+        "technique_name": "Clipboard Data",
+        "tactic": "collection",
+        "confidence": 0.9,
+    },
+    # ========================================================================
+    # EXFILTRATION APIs (NEW)
+    # ========================================================================
+    "InternetOpenUrlA": {
+        "technique_id": "T1071.001",
+        "technique_name": "Web Protocols",
+        "tactic": "command-and-control",
+        "confidence": 0.85,
+    },
+    "HttpSendRequestA": {
+        "technique_id": "T1071.001",
+        "technique_name": "Web Protocols",
+        "tactic": "command-and-control",
+        "confidence": 0.9,
+    },
+    "FtpPutFileA": {
+        "technique_id": "T1048",
+        "technique_name": "Exfiltration Over Alternative Protocol",
+        "tactic": "exfiltration",
+        "confidence": 0.85,
+    },
+    # ========================================================================
+    # IMPACT APIs (additional)
+    # ========================================================================
+    "DeleteFileW": {
+        "technique_id": "T1070.004",
+        "technique_name": "File Deletion",
+        "tactic": "defense-evasion",
+        "confidence": 0.6,
+    },
 }

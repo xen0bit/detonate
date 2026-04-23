@@ -467,6 +467,8 @@ async def get_stix_report(session_id: str, request: Request):
         findings=technique_matches,
         api_calls=api_call_records,
         analysis_date=db_analysis.created_at if db_analysis else None,
+        infrastructure=[],  # Infrastructure tracking not yet implemented in DB layer
+        vulnerabilities=[],  # CVE lookup not yet implemented in DB layer
     )
 
     # Serialize STIX bundle properly using stix2's serialize method
@@ -572,6 +574,8 @@ async def get_text_report(session_id: str, request: Request):
         api_calls=api_call_records,
         findings=technique_matches,
         strings=string_list,
+        infrastructure=[],  # Infrastructure not yet stored in DB
+        vulnerabilities=[],  # CVE lookup not yet stored in DB
     )
 
     report = generate_report(result)

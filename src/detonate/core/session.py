@@ -43,6 +43,28 @@ class TechniqueMatch:
 
 
 @dataclass
+class InfrastructureRecord:
+    """Record of infrastructure observed during analysis."""
+
+    name: str
+    infrastructure_types: list[str]
+    first_seen: datetime
+    last_seen: datetime
+    related_api_calls: list[APICallRecord] = field(default_factory=list)
+    confidence: str = "medium"
+
+
+@dataclass
+class VulnerabilityRecord:
+    """Record of a vulnerability (CVE) observed during analysis."""
+
+    cve_id: str
+    cve_data: dict
+    related_api_call: APICallRecord
+    technique_id: str | None = None
+
+
+@dataclass
 class AnalysisResult:
     """Complete analysis result."""
 
@@ -62,6 +84,8 @@ class AnalysisResult:
     api_calls: list[APICallRecord]
     findings: list[TechniqueMatch]
     strings: list[str]
+    infrastructure: list[InfrastructureRecord]
+    vulnerabilities: list[VulnerabilityRecord]
 
 
 class AnalysisSession:
@@ -105,6 +129,8 @@ class AnalysisSession:
         self.api_calls: list[APICallRecord] = []
         self.findings: dict[str, TechniqueMatch] = {}  # keyed by technique_id
         self.strings: list[str] = []
+        self.infrastructure: list[InfrastructureRecord] = []
+        self.vulnerabilities: list[VulnerabilityRecord] = []
         self.status: str = "pending"
         self.error_message: str | None = None
         self._call_sequence: int = 0  # Sequence counter for ordering events
@@ -145,6 +171,60 @@ class AnalysisSession:
         """Add an extracted string."""
         if value and value not in self.strings:
             self.strings.append(value)
+
+    def add_infrastructure(
+        self,
+        name: str,
+        infrastructure_types: list[str],
+        related_api_call: APICallRecord,
+    ) -> None:
+        """
+        Add or update infrastructure record.
+
+        Args:
+            name: Infrastructure identifier (e.g., "C2 Server: example.com")
+            infrastructure_types: List of types (e.g., ["command-and-control"])
+            related_api_call: API call that revealed this infrastructure
+        """
+        # Check if infrastructure already exists
+        for infra in self.infrastructure:
+            if infra.name == name:
+                infra.related_api_calls.append(related_api_call)
+                infra.last_seen = related_api_call.timestamp
+                return
+
+        # Create new record
+        self.infrastructure.append(InfrastructureRecord(
+            name=name,
+            infrastructure_types=infrastructure_types,
+            first_seen=related_api_call.timestamp,
+            last_seen=related_api_call.timestamp,
+            related_api_calls=[related_api_call],
+            confidence=related_api_call.confidence or "medium",
+        ))
+
+    def add_vulnerability(
+        self,
+        cve_id: str,
+        cve_data: dict,
+        related_api_call: APICallRecord,
+        technique_id: str | None = None,
+    ) -> None:
+        """
+        Add vulnerability (CVE) record.
+
+        Args:
+            cve_id: CVE identifier (e.g., "CVE-2023-1234")
+            cve_data: CVE information from NVD API
+            related_api_call: API call that revealed this vulnerability
+            technique_id: Optional technique ID that exploits this vulnerability
+        """
+        self.vulnerabilities.append(VulnerabilityRecord(
+            cve_id=cve_id,
+            cve_data=cve_data,
+            related_api_call=related_api_call,
+            technique_id=technique_id,
+        ))
 
     def add_technique_evidence(
         self,
@@ -201,4 +281,6 @@ class AnalysisSession:
             api_calls=self.api_calls,
             findings=list(self.findings.values()),
             strings=self.strings,
+            infrastructure=self.infrastructure,
+            vulnerabilities=self.vulnerabilities,
         )

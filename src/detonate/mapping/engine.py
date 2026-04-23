@@ -22,6 +22,9 @@ class TechniqueMatch:
         confidence: str,
         confidence_score: float,
         evidence_count: int = 1,
+        is_sub_technique: bool = False,
+        is_pattern_based: bool = False,
+        is_param_match: bool = False,
     ):
         self.technique_id = technique_id
         self.technique_name = technique_name
@@ -29,15 +32,58 @@ class TechniqueMatch:
         self.confidence = confidence
         self.confidence_score = confidence_score
         self.evidence_count = evidence_count
+        self.is_sub_technique = is_sub_technique
+        self.is_pattern_based = is_pattern_based
+        self.is_param_match = is_param_match
+        
+        # Set max confidence based on detection type per calibration rules:
+        # - Direct API match (no params): max 0.7
+        # - Parameter keyword match: max 0.95
+        # - Pattern-based (multi-call): max 0.95
+        # - Sub-technique: can reach 1.0 with bonus
+        if self.is_pattern_based:
+            self.max_confidence = 0.95
+        elif self.is_param_match:
+            self.max_confidence = 0.95
+        else:
+            # Direct API match without param refinement
+            self.max_confidence = 0.7
+        
+        # Apply sub-technique bonus after setting max_confidence
+        # This allows sub-techniques to exceed the base max (e.g., 0.95 + 0.1 = 1.0)
+        if self.is_sub_technique and "." in self.technique_id:
+            # Sub-technique bonus can push to 1.0
+            self.max_confidence = max(self.max_confidence, 1.0)
+            self.confidence_score = min(1.0, self.confidence_score + 0.1)
+            self.confidence = self._score_to_label(self.confidence_score)
 
     def add_evidence(self) -> None:
-        """Increment evidence count and recalculate confidence."""
+        """Increment evidence count and recalculate confidence with diminishing returns."""
         self.evidence_count += 1
-        # Boost confidence with more evidence (diminishing returns)
         import math
 
+        # Diminishing returns formula: log-based boost
+        # log(2)/log(10) ≈ 0.301, log(3)/log(10) ≈ 0.477, etc.
+        # Multiplied by 0.1 for conservative boost
         boost = math.log(self.evidence_count + 1) / math.log(10)
-        self.confidence_score = min(1.0, self.confidence_score + boost * 0.1)
+        
+        # Recalculate base score (without sub-technique bonus) then apply bonus
+        # This ensures sub-technique bonus is preserved on evidence accumulation
+        base_score = self.confidence_score
+        if self.is_sub_technique and "." in self.technique_id:
+            # Remove the bonus temporarily to calculate boost on base
+            base_score = max(0, self.confidence_score - 0.1)
+        
+        new_score = min(
+            self.max_confidence if not self.is_sub_technique else 1.0,
+            base_score + boost * 0.1
+        )
+        
+        # Re-apply sub-technique bonus if applicable
+        if self.is_sub_technique and "." in self.technique_id:
+            new_score = min(1.0, new_score + 0.1)
+        
+        self.confidence_score = new_score
         self.confidence = self._score_to_label(self.confidence_score)
 
     @staticmethod
@@ -160,6 +206,8 @@ class ATTCKMapper:
                             tactic=final_tactic,
                             confidence=TechniqueMatch._score_to_label(final_confidence),
                             confidence_score=final_confidence,
+                            is_sub_technique="." in final_technique_id,
+                            is_param_match=True,
                         )
                         self._add_or_update_finding(match)
                         # Return the updated finding from storage (with correct evidence count)
@@ -176,6 +224,13 @@ class ATTCKMapper:
             confidence=final_confidence,
         )
 
+        # Determine if this is a sub-technique (has dot notation)
+        is_sub_technique = "." in final_technique_id
+        
+        # Determine if this was a param-based match (refined from default)
+        # A param match occurs when final_confidence differs from the base API confidence
+        is_param_match = final_confidence != api_entry["confidence"]
+        
         # Create and store the technique match
         match = TechniqueMatch(
             technique_id=final_technique_id,
@@ -183,6 +238,8 @@ class ATTCKMapper:
             tactic=final_tactic,
             confidence=TechniqueMatch._score_to_label(final_confidence),
             confidence_score=final_confidence,
+            is_sub_technique=is_sub_technique,
+            is_param_match=is_param_match,
         )
 
         self._add_or_update_finding(match)

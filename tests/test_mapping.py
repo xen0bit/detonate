@@ -70,10 +70,10 @@ class TestATTCKMapper:
         """Test evidence count increases confidence."""
         mapper = ATTCKMapper()
 
-        # First call
+        # First call - use generic API match (not param-refined)
         result1 = mapper.map_api_call(
             "CreateProcessA",
-            {"lpCommandLine": "powershell"},
+            {"lpCommandLine": "notepad.exe"},
             platform="windows",
         )
         initial_score = result1.confidence_score
@@ -81,7 +81,7 @@ class TestATTCKMapper:
         # Second call (same technique)
         result2 = mapper.map_api_call(
             "CreateProcessA",
-            {"lpCommandLine": "powershell -enc"},
+            {"lpCommandLine": "calc.exe"},
             platform="windows",
         )
 

@@ -49,6 +49,8 @@ def detect_injection_pattern(api_calls: list[Any]) -> list[TechniqueMatch]:
                     confidence="high",
                     confidence_score=0.95,
                     evidence_count=len(sequence),
+                    is_pattern_based=True,
+                    is_param_match=False,
                 )
             )
 
@@ -62,6 +64,8 @@ def detect_injection_pattern(api_calls: list[Any]) -> list[TechniqueMatch]:
                     confidence="high",
                     confidence_score=0.95,
                     evidence_count=len(sequence),
+                    is_pattern_based=True,
+                    is_param_match=False,
                 )
             )
 
@@ -107,6 +111,8 @@ def detect_persistence_pattern(api_calls: list[Any]) -> list[TechniqueMatch]:
                 confidence="high",
                 confidence_score=0.9,
                 evidence_count=len(registry_ops),
+                is_pattern_based=True,
+                is_param_match=False,
             )
         )
 
@@ -120,6 +126,8 @@ def detect_persistence_pattern(api_calls: list[Any]) -> list[TechniqueMatch]:
                 confidence="high",
                 confidence_score=0.9,
                 evidence_count=len(service_ops),
+                is_pattern_based=True,
+                is_param_match=False,
             )
         )
 

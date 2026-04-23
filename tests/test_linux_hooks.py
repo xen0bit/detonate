@@ -401,3 +401,399 @@ class TestExitHandler:
         # Return value should be -1 (default on failure)
         record = mock_session.api_calls[0]
         assert record.return_value == -1
+
+
+class TestExpandedCredentialAccess:
+    """Tests for expanded credential access syscall coverage."""
+
+    def test_getuid_records_syscall(self, mock_session, mock_ql):
+        """Test getuid syscall is recorded."""
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_getuid(mock_ql)
+        
+        record = mock_session.api_calls[0]
+        assert record.syscall_name == "getuid"
+        
+    def test_geteuid_records_syscall(self, mock_session, mock_ql):
+        """Test geteuid syscall is recorded."""
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_geteuid(mock_ql)
+        
+        record = mock_session.api_calls[0]
+        assert record.syscall_name == "geteuid"
+        
+    def test_setresuid_privilege_escalation(self, mock_session, mock_ql):
+        """Test setresuid is detected as privilege escalation."""
+        mock_ql.arch.regs.rdi = 0  # ruid
+        mock_ql.arch.regs.rsi = 0  # euid
+        mock_ql.arch.regs.rdx = 0  # suid
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_setresuid(mock_ql)
+        
+        assert "T1548.001" in mock_session.findings
+        finding = mock_session.findings["T1548.001"]
+        assert finding.technique_id == "T1548.001"
+        assert finding.confidence == "high"
+        
+    def test_setresgid_privilege_escalation(self, mock_session, mock_ql):
+        """Test setresgid is detected as privilege escalation."""
+        mock_ql.arch.regs.rdi = 0  # rgid
+        mock_ql.arch.regs.rsi = 0  # egid
+        mock_ql.arch.regs.rdx = 0  # sgid
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_setresgid(mock_ql)
+        
+        assert "T1548.001" in mock_session.findings
+        finding = mock_session.findings["T1548.001"]
+        assert finding.technique_id == "T1548.001"
+
+
+class TestExpandedDiscovery:
+    """Tests for expanded discovery syscall coverage."""
+
+    def test_uname_records_syscall(self, mock_session, mock_ql):
+        """Test uname syscall is recorded."""
+        mock_ql.arch.regs.rdi = 0x1000  # buf
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_uname(mock_ql)
+        
+        record = mock_session.api_calls[0]
+        assert record.syscall_name == "uname"
+        
+    def test_getcwd_records_syscall(self, mock_session, mock_ql):
+        """Test getcwd syscall is recorded."""
+        mock_ql.arch.regs.rdi = 0x1000  # buf
+        mock_ql.arch.regs.rsi = 256  # size
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_getcwd(mock_ql)
+        
+        record = mock_session.api_calls[0]
+        assert record.syscall_name == "getcwd"
+        
+    def test_readlink_extracts_pathname(self, mock_session, mock_ql):
+        """Test readlink extracts and stores pathname."""
+        mock_ql.arch.regs.rdi = 0x1000  # pathname
+        mock_ql.mem.string = MagicMock(return_value="/etc/passwd")
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_readlink(mock_ql)
+        
+        assert "/etc/passwd" in mock_session.strings
+        
+    def test_gethostname_records_syscall(self, mock_session, mock_ql):
+        """Test gethostname syscall is recorded."""
+        mock_ql.arch.regs.rdi = 0x1000  # name
+        mock_ql.arch.regs.rsi = 64  # length
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_gethostname(mock_ql)
+        
+        record = mock_session.api_calls[0]
+        assert record.syscall_name == "gethostname"
+        
+    def test_sysinfo_records_syscall(self, mock_session, mock_ql):
+        """Test sysinfo syscall is recorded."""
+        mock_ql.arch.regs.rdi = 0x1000  # info struct
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_sysinfo(mock_ql)
+        
+        record = mock_session.api_calls[0]
+        assert record.syscall_name == "sysinfo"
+
+
+class TestContainerEscape:
+    """Tests for container escape detection."""
+
+    def test_mount_proc_detects_escape(self, mock_session, mock_ql):
+        """Test mount of /proc detects container escape."""
+        mock_ql.arch.regs.rdi = 0x1000  # source
+        mock_ql.arch.regs.rsi = 0x2000  # target
+        mock_ql.arch.regs.rdx = 0x3000  # fstype
+        
+        def mock_string(addr):
+            if addr == 0x1000:
+                return "/proc"
+            elif addr == 0x2000:
+                return "/mnt/proc"
+            return ""
+        
+        mock_ql.mem.string = MagicMock(side_effect=mock_string)
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_mount(mock_ql)
+        
+        assert "T1611" in mock_session.findings
+        finding = mock_session.findings["T1611"]
+        assert finding.confidence == "high"
+        assert finding.confidence_score == 0.95
+        
+    def test_mount_sys_detects_escape(self, mock_session, mock_ql):
+        """Test mount of /sys detects container escape."""
+        mock_ql.arch.regs.rdi = 0x1000
+        mock_ql.arch.regs.rsi = 0x2000
+        mock_ql.mem.string = MagicMock(side_effect=lambda addr: "/sys" if addr == 0x1000 else "/mnt/sys")
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_mount(mock_ql)
+        
+        assert "T1611" in mock_session.findings
+        
+    def test_pivot_root_detects_escape(self, mock_session, mock_ql):
+        """Test pivot_root detects container escape."""
+        mock_ql.arch.regs.rdi = 0x1000  # new_root
+        mock_ql.arch.regs.rsi = 0x2000  # put_old
+        mock_ql.mem.string = MagicMock(return_value="/newroot")
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_pivot_root(mock_ql)
+        
+        assert "T1611" in mock_session.findings
+        finding = mock_session.findings["T1611"]
+        assert finding.confidence == "high"
+        assert finding.confidence_score == 0.9
+        
+    def test_unshare_detects_escape(self, mock_session, mock_ql):
+        """Test unshare detects container escape."""
+        mock_ql.arch.regs.rdi = 0x00020000  # CLONE_NEWNS
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_unshare(mock_ql)
+        
+        assert "T1611" in mock_session.findings
+        finding = mock_session.findings["T1611"]
+        assert finding.confidence == "medium"
+
+
+class TestDefenseEvasion:
+    """Tests for defense evasion detection."""
+
+    def test_rename_history_clearing(self, mock_session, mock_ql):
+        """Test rename of .bash_history detects history clearing."""
+        mock_ql.arch.regs.rdi = 0x1000  # oldpath
+        mock_ql.arch.regs.rsi = 0x2000  # newpath
+        mock_ql.mem.string = MagicMock(side_effect=lambda addr: ".bash_history" if addr == 0x1000 else ".bash_history.bak")
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_rename(mock_ql)
+        
+        assert "T1070.003" in mock_session.findings
+        finding = mock_session.findings["T1070.003"]
+        assert finding.confidence == "high"
+        assert finding.confidence_score == 0.9
+        
+    def test_renameat2_history_clearing(self, mock_session, mock_ql):
+        """Test renameat2 of .bash_history detects history clearing."""
+        mock_ql.arch.regs.rdi = 0  # olddirfd
+        mock_ql.arch.regs.rsi = 0x1000  # oldpath
+        mock_ql.arch.regs.rdx = 0  # newdirfd
+        mock_ql.arch.regs.r10 = 0x2000  # newpath
+        mock_ql.arch.regs.r8 = 0  # flags
+        mock_ql.mem.string = MagicMock(side_effect=lambda addr: ".zsh_history" if addr == 0x1000 else ".zsh_history.bak")
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_renameat2(mock_ql)
+        
+        assert "T1070.003" in mock_session.findings
+
+
+class TestPersistenceDetection:
+    """Tests for persistence mechanism detection."""
+
+    def test_access_cron_detection(self, mock_session, mock_ql):
+        """Test access to /etc/cron detects persistence."""
+        mock_ql.arch.regs.rdi = 0x1000  # pathname
+        mock_ql.arch.regs.rsi = 0  # mode
+        mock_ql.mem.string = MagicMock(return_value="/etc/cron.d/malicious")
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_access(mock_ql)
+        
+        # Should store the string
+        assert "/etc/cron.d/malicious" in mock_session.strings
+        
+    def test_access_systemd_detection(self, mock_session, mock_ql):
+        """Test access to systemd directory detects persistence."""
+        mock_ql.arch.regs.rdi = 0x1000
+        mock_ql.mem.string = MagicMock(return_value="/etc/systemd/system/malware.service")
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_access(mock_ql)
+        
+        assert "/etc/systemd/system/malware.service" in mock_session.strings
+        
+    def test_access_bashrc_detection(self, mock_session, mock_ql):
+        """Test access to .bashrc detects shell persistence."""
+        mock_ql.arch.regs.rdi = 0x1000
+        mock_ql.mem.string = MagicMock(return_value="/home/user/.bashrc")
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_access(mock_ql)
+        
+        assert "/home/user/.bashrc" in mock_session.strings
+
+
+class TestCollectionExfiltration:
+    """Tests for collection and exfiltration detection."""
+
+    def test_pread64_records_syscall(self, mock_session, mock_ql):
+        """Test pread64 syscall is recorded."""
+        mock_ql.arch.regs.rdi = 3  # fd
+        mock_ql.arch.regs.rsi = 0x1000  # buf
+        mock_ql.arch.regs.rdx = 1024  # count
+        mock_ql.arch.regs.r10 = 0  # offset
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_pread64(mock_ql)
+        
+        record = mock_session.api_calls[0]
+        assert record.syscall_name == "pread64"
+        
+    def test_sendmsg_records_syscall(self, mock_session, mock_ql):
+        """Test sendmsg syscall is recorded for exfiltration detection."""
+        mock_ql.arch.regs.rdi = 5  # sockfd
+        mock_ql.arch.regs.rdx = 256  # length
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_sendmsg(mock_ql)
+        
+        record = mock_session.api_calls[0]
+        assert record.syscall_name == "sendmsg"
+        
+    def test_recvmsg_records_syscall(self, mock_session, mock_ql):
+        """Test recvmsg syscall is recorded."""
+        mock_ql.arch.regs.rdi = 5  # sockfd
+        mock_ql.arch.regs.rdx = 256  # length
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_recvmsg(mock_ql)
+        
+        record = mock_session.api_calls[0]
+        assert record.syscall_name == "recvmsg"
+        
+    def test_accept_records_syscall(self, mock_session, mock_ql):
+        """Test accept syscall is recorded for lateral movement."""
+        mock_ql.arch.regs.rdi = 4  # sockfd
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_accept(mock_ql)
+        
+        record = mock_session.api_calls[0]
+        assert record.syscall_name == "accept"
+        
+    def test_accept4_records_syscall(self, mock_session, mock_ql):
+        """Test accept4 syscall is recorded."""
+        mock_ql.arch.regs.rdi = 4  # sockfd
+        mock_ql.arch.regs.rsi = 0  # flags
+        
+        hooks = LinuxHooks(mock_session, mock_ql)
+        hooks.hook_sys_accept4(mock_ql)
+        
+        record = mock_session.api_calls[0]
+        assert record.syscall_name == "accept4"
+
+
+class TestLinuxMapCoverage:
+    """Tests for linux_map.py coverage verification."""
+
+    def test_credential_access_syscalls_mapped(self):
+        """Test credential access syscalls have mappings."""
+        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
+        
+        credential_syscalls = ["getuid", "geteuid", "setresuid", "setresgid", "setreuid", "setregid"]
+        for syscall in credential_syscalls:
+            assert syscall in SYSCALL_TO_TECHNIQUE, f"{syscall} not mapped"
+            
+    def test_discovery_syscalls_mapped(self):
+        """Test discovery syscalls have mappings."""
+        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
+        
+        discovery_syscalls = ["uname", "getcwd", "readlink", "readlinkat", "gethostname", "sysinfo"]
+        for syscall in discovery_syscalls:
+            assert syscall in SYSCALL_TO_TECHNIQUE, f"{syscall} not mapped"
+            
+    def test_container_escape_syscalls_mapped(self):
+        """Test container escape syscalls have mappings."""
+        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
+        
+        escape_syscalls = ["mount", "umount", "umount2", "pivot_root", "unshare"]
+        for syscall in escape_syscalls:
+            assert syscall in SYSCALL_TO_TECHNIQUE, f"{syscall} not mapped"
+            
+    def test_persistence_syscalls_mapped(self):
+        """Test persistence/defense evasion syscalls have mappings."""
+        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
+        
+        persistence_syscalls = ["rename", "renameat2", "fadvise64"]
+        for syscall in persistence_syscalls:
+            assert syscall in SYSCALL_TO_TECHNIQUE, f"{syscall} not mapped"
+            
+    def test_collection_syscalls_mapped(self):
+        """Test collection syscalls have mappings."""
+        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
+        
+        collection_syscalls = ["pread64", "pwrite64", "splice", "vmsplice", "tee"]
+        for syscall in collection_syscalls:
+            assert syscall in SYSCALL_TO_TECHNIQUE, f"{syscall} not mapped"
+            
+    def test_exfiltration_syscalls_mapped(self):
+        """Test exfiltration syscalls have mappings."""
+        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
+        
+        exfil_syscalls = ["sendmsg", "recvmsg"]
+        for syscall in exfil_syscalls:
+            assert syscall in SYSCALL_TO_TECHNIQUE, f"{syscall} not mapped"
+            
+    def test_lateral_movement_syscalls_mapped(self):
+        """Test lateral movement syscalls have mappings."""
+        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
+        
+        latmov_syscalls = ["accept", "accept4"]
+        for syscall in latmov_syscalls:
+            assert syscall in SYSCALL_TO_TECHNIQUE, f"{syscall} not mapped"
+            
+    def test_file_discovery_syscalls_mapped(self):
+        """Test file discovery syscalls have mappings."""
+        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
+        
+        file_disc_syscalls = ["access", "faccessat", "stat", "fstat", "lstat", "statx"]
+        for syscall in file_disc_syscalls:
+            assert syscall in SYSCALL_TO_TECHNIQUE, f"{syscall} not mapped"
+            
+    def test_openat_has_container_paths(self):
+        """Test openat has container escape path mappings."""
+        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
+        
+        openat_mapping = SYSCALL_TO_TECHNIQUE["openat"]
+        assert "param_checks" in openat_mapping
+        assert "pathname" in openat_mapping["param_checks"]
+        
+        pathname_checks = openat_mapping["param_checks"]["pathname"]
+        assert "/var/run/docker.sock" in pathname_checks
+        assert "/.dockerenv" in pathname_checks
+        
+    def test_openat_has_persistence_paths(self):
+        """Test openat has persistence path mappings."""
+        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
+        
+        openat_mapping = SYSCALL_TO_TECHNIQUE["openat"]
+        pathname_checks = openat_mapping["param_checks"]["pathname"]
+        
+        assert "/etc/cron.d/" in pathname_checks
+        assert "/etc/systemd/system/" in pathname_checks
+        
+    def test_connect_has_cloud_metadata(self):
+        """Test connect has cloud metadata endpoint detection."""
+        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
+        
+        connect_mapping = SYSCALL_TO_TECHNIQUE["connect"]
+        assert "param_checks" in connect_mapping
+        assert "address" in connect_mapping["param_checks"]
+        
+        address_checks = connect_mapping["param_checks"]["address"]
+        assert "169.254.169.254" in address_checks  # AWS
+        assert "metadata.google.internal" in address_checks  # GCP

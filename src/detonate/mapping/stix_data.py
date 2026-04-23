@@ -30,6 +30,13 @@ class STIXDataStore:
         self.techniques: dict[str, dict[str, Any]] = {}
         self.tactics: dict[str, dict[str, Any]] = {}
         self.relationships: list[dict[str, Any]] = []
+        self.course_of_action: dict[str, dict[str, Any]] = {}
+        self.mitigates_relationships: list[dict[str, Any]] = []
+        self.technique_to_mitigations: dict[str, list[str]] = {}
+        self.data_sources: dict[str, dict[str, Any]] = {}
+        self.data_components: dict[str, dict[str, Any]] = {}
+        self.intrusion_sets: dict[str, dict[str, Any]] = {}
+        self.relationships_by_type: dict[str, list[dict]] = {}
         self._loaded = False
 
         if stix_path:
@@ -69,6 +76,8 @@ class STIXDataStore:
         """Index STIX objects for fast lookup."""
         objects = self.bundle.get("objects", [])
 
+        # First pass: index attack-patterns and tactics
+        attack_pattern_ids: dict[str, str] = {}  # stix_id -> attack_id
         for obj in objects:
             obj_type = obj.get("type")
             external_refs = obj.get("external_references", [])
@@ -80,50 +89,161 @@ class STIXDataStore:
                     attack_id = ref.get("external_id")
                     break
 
-            if not attack_id:
-                continue
-
             if obj_type == "attack-pattern":
-                # Extract tactic from kill chain phases
-                tactic = None
-                kill_chain_phases = obj.get("kill_chain_phases", [])
-                for phase in kill_chain_phases:
-                    if phase.get("kill_chain_name") == "mitre-attack":
-                        tactic = phase.get("phase_name")
-                        break
+                if attack_id:
+                    # Extract tactic from kill chain phases
+                    tactic = None
+                    kill_chain_phases = obj.get("kill_chain_phases", [])
+                    for phase in kill_chain_phases:
+                        if phase.get("kill_chain_name") == "mitre-attack":
+                            tactic = phase.get("phase_name")
+                            break
 
-                self.techniques[attack_id] = {
-                    "id": obj.get("id"),
-                    "technique_id": attack_id,
-                    "name": obj.get("name", ""),
-                    "description": obj.get("description", ""),
-                    "tactic": tactic,
-                    "url": self._build_mitre_url(attack_id),
-                    "aliases": obj.get("aliases", []),
-                    "data_sources": obj.get("x_mitre_data_sources", []),
-                    "platforms": obj.get("x_mitre_platforms", []),
-                    "permissions_required": obj.get("x_mitre_permissions_required", []),
-                }
+                    self.techniques[attack_id] = {
+                        "id": obj.get("id"),
+                        "technique_id": attack_id,
+                        "name": obj.get("name", ""),
+                        "description": obj.get("description", ""),
+                        "tactic": tactic,
+                        "url": self._build_mitre_url(attack_id),
+                        "aliases": obj.get("aliases", []),
+                        "data_sources": obj.get("x_mitre_data_sources", []),
+                        "platforms": obj.get("x_mitre_platforms", []),
+                        "permissions_required": obj.get("x_mitre_permissions_required", []),
+                    }
+                    attack_pattern_ids[obj.get("id")] = attack_id
 
             elif obj_type == "x-mitre-tactic":
-                self.tactics[attack_id] = {
+                if attack_id:
+                    self.tactics[attack_id] = {
+                        "id": obj.get("id"),
+                        "tactic_id": attack_id,
+                        "name": obj.get("name", ""),
+                        "description": obj.get("description", ""),
+                        "shortname": obj.get("x_mitre_shortname", ""),
+                        "url": self._build_mitre_url(attack_id),
+                    }
+
+            elif obj_type == "course-of-action":
+                # Index course-of-action objects
+                # Extract mitigation ID (M-style) from external references
+                mitre_id = attack_id if attack_id else obj.get("id")
+                self.course_of_action[mitre_id] = {
                     "id": obj.get("id"),
-                    "tactic_id": attack_id,
+                    "mitigation_id": mitre_id,
                     "name": obj.get("name", ""),
                     "description": obj.get("description", ""),
-                    "shortname": obj.get("x_mitre_shortname", ""),
-                    "url": self._build_mitre_url(attack_id),
+                    "url": self._build_mitre_mitigation_url(mitre_id),
+                    "stix_id": obj.get("id"),
                 }
 
-        # Index relationships
+            elif obj_type == "x-mitre-data-source":
+                # Index data source objects
+                ds_mitre_id = attack_id if attack_id else obj.get("id")
+                self.data_sources[ds_mitre_id] = {
+                    "id": obj.get("id"),
+                    "source_id": ds_mitre_id,
+                    "name": obj.get("name", ""),
+                    "description": obj.get("description", ""),
+                    "stix_id": obj.get("id"),
+                    "platforms": obj.get("x_mitre_platforms", []),
+                }
+
+            elif obj_type == "x-mitre-data-component":
+                # Index data component objects
+                dc_mitre_id = attack_id if attack_id else obj.get("id")
+                self.data_components[dc_mitre_id] = {
+                    "id": obj.get("id"),
+                    "component_id": dc_mitre_id,
+                    "name": obj.get("name", ""),
+                    "description": obj.get("description", ""),
+                    "stix_id": obj.get("id"),
+                    "log_sources": obj.get("x_mitre_log_sources", []),
+                }
+
+            elif obj_type == "intrusion-set":
+                # Index intrusion set objects (threat actors)
+                # Extract intrusion set ID (G-style) from external references
+                is_mitre_id = attack_id if attack_id else obj.get("id")
+                self.intrusion_sets[is_mitre_id] = {
+                    "id": obj.get("id"),
+                    "intrusion_set_id": is_mitre_id,
+                    "name": obj.get("name", ""),
+                    "description": obj.get("description", ""),
+                    "aliases": obj.get("aliases", []),
+                    "ttps": [],  # Will be populated from 'uses' relationships
+                    "url": self._build_mitre_group_url(is_mitre_id),
+                }
+
+        # Second pass: index relationships and build technique-to-mitigation mapping
         self.relationships = [
             obj for obj in objects if obj.get("type") == "relationship"
         ]
+
+        # Index mitigates relationships specifically
+        self.mitigates_relationships = [
+            obj for obj in self.relationships
+            if obj.get("relationship_type") == "mitigates"
+        ]
+
+        # Index relationships by type for efficient lookup
+        for rel in self.relationships:
+            rel_type = rel.get("relationship_type")
+            if rel_type not in self.relationships_by_type:
+                self.relationships_by_type[rel_type] = []
+            self.relationships_by_type[rel_type].append(rel)
+
+        # Build technique -> mitigations mapping
+        for rel in self.mitigates_relationships:
+            source_ref = rel.get("source_ref", "")  # course-of-action--xxx
+            target_ref = rel.get("target_ref", "")  # attack-pattern--xxx
+
+            # Find the technique ID for the target
+            if target_ref in attack_pattern_ids:
+                technique_id = attack_pattern_ids[target_ref]
+
+                # Find the mitigation ID for the source
+                mitigation_id = None
+                for mitre_id, coa_data in self.course_of_action.items():
+                    if coa_data["id"] == source_ref:
+                        mitigation_id = mitre_id
+                        break
+
+                if mitigation_id:
+                    if technique_id not in self.technique_to_mitigations:
+                        self.technique_to_mitigations[technique_id] = []
+                    if mitigation_id not in self.technique_to_mitigations[technique_id]:
+                        self.technique_to_mitigations[technique_id].append(mitigation_id)
+
+        # Populate TTPs for each intrusion set from 'uses' relationships
+        for rel in self.relationships_by_type.get("uses", []):
+            source_ref = rel.get("source_ref", "")  # intrusion-set--xxx
+            target_ref = rel.get("target_ref", "")  # attack-pattern--xxx
+
+            # Find intrusion set by source_ref
+            for is_data in self.intrusion_sets.values():
+                if is_data["id"] == source_ref:
+                    # Extract technique ID from target_ref
+                    if target_ref in attack_pattern_ids:
+                        technique_id = attack_pattern_ids[target_ref]
+                        if technique_id not in is_data["ttps"]:
+                            is_data["ttps"].append(technique_id)
+                    break
 
     @staticmethod
     def _build_mitre_url(technique_id: str) -> str:
         """Build MITRE ATT&CK URL for a technique."""
         return f"https://attack.mitre.org/techniques/{technique_id.replace('.', '/')}/"
+
+    @staticmethod
+    def _build_mitre_mitigation_url(mitigation_id: str) -> str:
+        """Build MITRE ATT&CK URL for a mitigation."""
+        return f"https://attack.mitre.org/mitigations/{mitigation_id}/"
+
+    @staticmethod
+    def _build_mitre_group_url(group_id: str) -> str:
+        """Build MITRE ATT&CK URL for an intrusion set (group)."""
+        return f"https://attack.mitre.org/groups/{group_id}/"
 
     def get_technique(self, technique_id: str) -> dict[str, Any] | None:
         """
@@ -266,6 +386,67 @@ class STIXDataStore:
     def get_all_techniques(self) -> list[dict[str, Any]]:
         """Get all techniques."""
         return list(self.techniques.values())
+
+    def get_mitigations_for_technique(self, technique_id: str) -> list[dict[str, Any]]:
+        """
+        Get all mitigations for a given technique.
+
+        Args:
+            technique_id: ATT&CK technique ID (e.g., "T1055.001")
+
+        Returns:
+            List of mitigation dictionaries. Empty list if none found.
+        """
+        # Try exact match first
+        if technique_id in self.technique_to_mitigations:
+            mitigation_ids = self.technique_to_mitigations[technique_id]
+            return [
+                self.course_of_action[mid]
+                for mid in mitigation_ids
+                if mid in self.course_of_action
+            ]
+
+        # Fall back to parent technique for sub-techniques
+        if "." in technique_id:
+            parent_id = technique_id.split(".")[0]
+            if parent_id in self.technique_to_mitigations:
+                mitigation_ids = self.technique_to_mitigations[parent_id]
+                return [
+                    self.course_of_action[mid]
+                    for mid in mitigation_ids
+                    if mid in self.course_of_action
+                ]
+
+        return []
+
+    def get_all_mitigations(self) -> list[dict[str, Any]]:
+        """Get all course-of-action objects."""
+        return list(self.course_of_action.values())
+
+    def get_mitigation(self, mitigation_id: str) -> dict[str, Any] | None:
+        """Get a specific mitigation by ID."""
+        return self.course_of_action.get(mitigation_id)
+
+    def get_all_intrusion_sets(self) -> list[dict]:
+        """
+        Get all intrusion sets (threat actors).
+
+        Returns:
+            List of intrusion set metadata dicts.
+        """
+        return list(self.intrusion_sets.values())
+
+    def get_intrusion_set(self, intrusion_set_id: str) -> dict[str, Any] | None:
+        """
+        Get intrusion set by ID.
+
+        Args:
+            intrusion_set_id: MITRE ATT&CK group ID (e.g., "G0001")
+
+        Returns:
+            Intrusion set metadata dict or None if not found.
+        """
+        return self.intrusion_sets.get(intrusion_set_id)
 
     @property
     def is_loaded(self) -> bool:
