@@ -1,1694 +1,1344 @@
-# detonate ATT&CK & STIX Enhancement Plan
-
-**Document Version:** 1.0  
-**Created:** 2025-04-23  
-**Status:** Approved for Implementation  
-**Priority:** Depth-First, Then Breadth
-
----
+# Qiling Rootfs Submodule Integration - Implementation Plan
 
 ## Executive Summary
 
-This document outlines a comprehensive plan to enhance detonate's MITRE ATT&CK mapping and STIX 2.1 output capabilities. Based on deep research into the ATT&CK v18.1 knowledge base (24,769 STIX objects across 16 object types) and OASIS CTI specifications, this plan will significantly expand detonate's threat intelligence output while maintaining accuracy.
+Integrate the official Qiling rootfs repository (`https://github.com/qilingframework/rootfs.git`) as a git submodule to enable reliable emulation of complex binaries (including Go) and extend detonate to support all major architectures provided by Qiling.
 
-**Current State:**
-- Maps 42 Windows APIs + 26 Linux syscalls to ATT&CK techniques
-- Generates STIX bundles with Malware, AttackPattern, Relationship, ObservedData objects
-- Confidence scoring with evidence accumulation
-- Pattern detection for injection/persistence chains
+**Key Benefits:**
+- ✅ Proper system libraries for all architectures (x86_64, x86, arm64, arm, mips, mipsel, riscv64)
+- ✅ Improved Go binary emulation (proper libc, dynamic linker)
+- ✅ Multi-architecture support with automatic detection
+- ✅ Simplified setup via `make rootfs-init`
+- ✅ Clear Windows DLL documentation for users
 
-**Target State:**
-- 80+ Windows APIs + 60+ Linux syscalls mapped
-- Full sub-technique granularity (T1059.001 vs T1059)
-- Mitigation recommendations (268 course-of-action objects)
-- Data source/detection opportunities (38 sources + 109 components)
-- STIX Indicator generation with pattern matching
-- Infrastructure tracking for C2 servers
-- Live CVE lookups via NVD API
-- Threat actor attribution (187 intrusion-sets)
-- Campaign linkage (52 campaigns)
+**Priority:** Focus on x86_64, x86, arm64 first (high priority), then extend to other architectures incrementally.
 
 ---
 
-## Design Principles
+## Table of Contents
 
-1. **Depth Before Breadth:** Perfect core technique mapping before expanding to new object types
-2. **Accuracy Over Coverage:** Prefer fewer high-confidence detections over many low-confidence ones
-3. **ENV-Controlled Features:** All optional features toggled via environment variables
-4. **STIX 2.1 Compliance:** All output conforms to OASIS STIX 2.1 specification
-5. **Backward Compatible:** Existing functionality unchanged; new features additive only
+1. [Implementation Phases](#implementation-phases)
+2. [File Changes](#file-changes)
+3. [User Flows](#user-flows)
+4. [Testing & Validation](#testing--validation)
+5. [Acceptance Criteria](#acceptance-criteria)
+6. [Troubleshooting Guide](#troubleshooting-guide)
 
 ---
 
 ## Implementation Phases
 
-### Phase 1: Deepen Core Technique Mapping (CRITICAL)
+### Phase 1: Git Submodule Setup
 
-**Timeline:** 2-3 weeks  
-**Dependencies:** None  
-**Owner:** Core Team
+**Objective:** Add Qiling rootfs as git submodule with shallow clone for fast initialization.
 
-#### 1.1 Expand Windows API Coverage
+**Commands:**
+```bash
+# Initialize submodule (shallow clone, depth=1)
+git submodule add --depth 1 https://github.com/qilingframework/rootfs.git data/qiling_rootfs
 
-**Current:** 42 APIs mapped  
-**Target:** 80 APIs covering top 200 techniques by prevalence
+# Verify submodule
+git submodule status
 
-**New APIs to Map:**
-
-| Category | APIs | Techniques | Priority |
-|----------|------|------------|----------|
-| Credential Access | `CredEnumerateA/W`, `CredReadW`, `SamIConnect`, `LsaOpenPolicy`, `LsaQueryInformationPolicy` | T1003.001 (LSASS), T1003.002 (SAM), T1003.004 (LSA Secrets) | P0 |
-| Discovery | `GetSystemInfo`, `GetVersionExA/W`, `NetShareEnum`, `NetGetJoinInformation`, `DsGetDcNameW` | T1082, T1135, T1083 | P0 |
-| Lateral Movement | `WNetAddConnection2W`, `CreateProcessWithLogonW`, `ImpersonateLoggedOnUser` | T1021.002, T1021.003 | P0 |
-| Persistence | `SchTasksCreate`, `RegCreateKeyExW`, `CreateServiceW` | T1053.005, T1547.001, T1543.003 | P0 |
-| Defense Evasion | `SetFileTime`, `RemoveDirectoryA/W`, `ClearEventLogA`, `BackupEventLogA` | T1070.003, T1070.004 | P1 |
-| Execution | `CreateProcessWithTokenW`, `ShellExecuteExW`, `WinExec` | T1059.003, T1059.001 | P1 |
-| Collection | `FindFirstFileA/W`, `FindNextFileA`, `GetClipboardData` | T1005, T1115 | P1 |
-| Exfiltration | `InternetOpenUrlA`, `HttpSendRequestA`, `FtpPutFileA` | T1041, T1048 | P2 |
-| Impact | `CryptEncrypt`, `CryptDecrypt`, `DeleteFileW` | T1486, T1070.004 | P2 |
-
-**File Changes:**
-- `src/detonate/mapping/windows_map.py` - Add ~40 new API mappings
-- `src/detonate/core/hooks/windows.py` - Add hook implementations for new APIs
-- `src/detonate/mapping/engine.py` - Support sub-technique inheritance
-
-**Sub-technique Granularity:**
-
-Current issue: Many mappings use parent technique IDs only.
-
-```python
-# BEFORE (windows_map.py line 8)
-"CreateProcessA": {
-    "technique_id": "T1106",  # Native API - parent only
-    "technique_name": "Native API",
-    ...
-}
-
-# AFTER
-"CreateProcessA": {
-    "technique_id": "T1059.003",  # Windows Command Shell - sub-technique
-    "technique_name": "Windows Command Shell",
-    "param_checks": {
-        "lpCommandLine": {
-            "powershell": {
-                "id": "T1059.001",  # PowerShell - more specific
-                "name": "PowerShell",
-                ...
-            }
-        }
-    }
-}
+# Expected output:
+# <commit-hash> data/qiling_rootfs (heads/master)
 ```
 
-**Acceptance Criteria:**
-- [ ] All 40 new APIs have mappings in `windows_map.py`
-- [ ] Hook implementations exist in `hooks/windows.py`
-- [ ] Unit tests pass for all new hooks (synthesized call tests)
-- [ ] Sub-technique IDs used where applicable (not parent-only)
-- [ ] Parameter-based refinement for high-confidence matches
-
-#### 1.2 Expand Linux Syscall Coverage
-
-**Current:** 26 syscalls mapped  
-**Target:** 60 syscalls
-
-**New Syscalls to Map:**
-
-| Category | Syscalls | Techniques | Priority |
-|----------|----------|------------|----------|
-| Credential Access | `openat` (/etc/shadow), `getuid`, `geteuid`, `setresuid` | T1003.008, T1548.001 | P0 |
-| Discovery | `uname`, `getcwd`, `readlink`, `gethostname`, `sysinfo` | T1082, T1083, T1016 | P0 |
-| Container Escape | `mount`, `umount`, `pivot_root`, `unshare` | T1611 | P0 |
-| Cloud Metadata | `socket` (169.254.169.254), `connect` (metadata API) | T1592.004 | P0 |
-| Persistence | `openat` (cron), `openat` (systemd unit) | T1053.003, T1543.002 | P1 |
-| Defense Evasion | `unlinkat`, `renameat2`, `fadvise64` (clear cache) | T1070.004, T1070.003 | P1 |
-| Lateral Movement | `ssh` via `execve`, `scp` file access | T1021.004 | P1 |
-| Collection | `read`, `pread64`, `splice` | T1005 | P2 |
-| Exfiltration | `sendto`, `sendmsg`, `write` (network socket) | T1041 | P2 |
-
-**File Changes:**
-- `src/detonate/mapping/linux_map.py` - Add ~35 new syscall mappings
-- `src/detonate/core/hooks/linux.py` - Add hook implementations
-- `src/detonate/mapping/engine.py` - Support platform-specific confidence adjustments
-
-**Special Considerations for Linux:**
-
-1. **Container Detection:** Flag syscalls that suggest container escape attempts
-2. **Cloud Metadata:** Detect access to cloud provider metadata endpoints
-3. **File Path Analysis:** Enhance parameter checks for sensitive file paths
-
-```python
-# linux_map.py - Enhanced parameter checks
-"openat": {
-    "technique_id": "T1005",
-    "param_checks": {
-        "pathname": {
-            "/etc/shadow": {
-                "id": "T1003.008",
-                "name": "OS Credential Dumping: /etc/passwd and /etc/shadow",
-                "tactic": "credential-access",
-                "confidence": 0.95  # Higher confidence for shadow file
-            },
-            "/proc/self/environ": {
-                "id": "T1057",
-                "name": "Process Discovery",
-                "tactic": "discovery",
-                "confidence": 0.8
-            },
-            "/var/run/docker.sock": {
-                "id": "T1611",
-                "name": "Escape to Host",
-                "tactic": "privilege-escalation",
-                "confidence": 0.9
-            }
-        }
-    }
-}
+**Directory Structure After Phase 1:**
+```
+detonate/
+├── data/
+│   ├── qiling_rootfs/              # NEW: Git submodule
+│   │   ├── x8664_linux/
+│   │   │   ├── bin/
+│   │   │   ├── lib/
+│   │   │   ├── lib64/
+│   │   │   ├── etc/
+│   │   │   └── kernel/
+│   │   ├── x86_linux/
+│   │   ├── arm64_linux/
+│   │   ├── arm_linux/
+│   │   ├── mips32_linux/
+│   │   ├── mips32el_linux/
+│   │   ├── riscv64_linux/
+│   │   └── ... (all Qiling architectures)
+│   └── rootfs/                     # Existing (for Windows DLLs)
+├── .gitmodules                     # NEW: Submodule configuration
+└── ...
 ```
 
-**Acceptance Criteria:**
-- [ ] All 35 new syscalls have mappings in `linux_map.py`
-- [ ] Hook implementations exist in `hooks/linux.py`
-- [ ] Unit tests pass for all new hooks
-- [ ] Container escape patterns detected
-- [ ] Cloud metadata access detected (AWS, GCP, Azure endpoints)
-
-#### 1.3 Confidence Calibration
-
-**Goal:** Ensure confidence scores accurately reflect detection reliability
-
-**Calibration Rules:**
-
-| Detection Type | Base Score | Evidence Boost | Max Score |
-|----------------|------------|----------------|-----------|
-| Direct API match (no params) | 0.5 | +0.1 per evidence | 0.7 |
-| Parameter keyword match | 0.8 | +0.05 per evidence | 0.95 |
-| Pattern-based (multi-call) | 0.85 | Fixed | 0.95 |
-| RWX memory allocation | 0.6 | +0.2 if remote process | 0.95 |
-| Sub-technique specificity | +0.1 | N/A | 1.0 |
-
-**Implementation:**
-```python
-# src/detonate/mapping/engine.py
-class TechniqueMatch:
-    def add_evidence(self) -> None:
-        """Increment evidence count and recalculate confidence."""
-        self.evidence_count += 1
-        # Diminishing returns formula
-        import math
-        boost = math.log(self.evidence_count + 1) / math.log(10)
-        self.confidence_score = min(
-            self.max_confidence,  # Cap at technique-specific maximum
-            self.confidence_score + boost * 0.1
-        )
-        self.confidence = self._score_to_label(self.confidence_score)
-```
-
-**Acceptance Criteria:**
-- [ ] Confidence scores calibrated against test cases
-- [ ] Evidence accumulation uses diminishing returns
-- [ ] Sub-technique matches receive +0.1 bonus
-- [ ] Pattern-based detections capped at 0.95
-
----
-
-### Phase 2: Mitigation & Data Source Mapping (HIGH)
-
-**Timeline:** 2 weeks  
-**Dependencies:** Phase 1 complete, STIX data loaded  
-**Owner:** Intelligence Team
-
-#### 2.1 Mitigation Recommendations
-
-**Data Source:** 268 course-of-action objects from `enterprise-attack.json`
-
-**Implementation:**
-
-```python
-# New file: src/detonate/mapping/mitigations.py
-"""MITRE ATT&CK mitigation mappings."""
-
-TECHNIQUE_TO_MITIGATION = {
-    "T1055.001": [
-        {
-            "mitigation_id": "M1042",
-            "name": "Disable or Remove Feature or Program",
-            "description": "Remove or disable software that can be used to inject malicious code into processes.",
-            "stix_id": "course-of-action--ae18c07a-...",
-            "url": "https://attack.mitre.org/mitigations/M1042"
-        },
-        {
-            "mitigation_id": "M1040",
-            "name": "Behavior Prevention on Endpoint",
-            "description": "Behavioral detection systems can monitor process injection activity...",
-            "stix_id": "course-of-action--...",
-            "url": "https://attack.mitre.org/mitigations/M1040"
-        }
-    ],
-    "T1059.001": [
-        {
-            "mitigation_id": "M1049",
-            "name": "Antivirus/Antimalware",
-            "description": "Use antivirus or antimalware tools to detect and block PowerShell-based attacks.",
-            "stix_id": "course-of-action--...",
-            "url": "https://attack.mitre.org/mitigations/M1049"
-        },
-        {
-            "mitigation_id": "M1054",
-            "name": "Script Blocking",
-            "description": "Scripts are a common method of execution for adversaries...",
-            "stix_id": "course-of-action--...",
-            "url": "https://attack.mitre.org/mitigations/M1054"
-        }
-    ],
-    # ... mappings for all detected techniques
-}
-
-def get_mitigations_for_technique(technique_id: str) -> list[dict]:
-    """Return list of mitigations for a given technique."""
-    return TECHNIQUE_TO_MITIGATION.get(technique_id, [])
-
-def get_all_mitigations() -> list[dict]:
-    """Return all unique mitigations."""
-    all_mitigations = []
-    seen_ids = set()
-    for mitigation_list in TECHNIQUE_TO_MITIGATION.values():
-        for mitigation in mitigation_list:
-            if mitigation["mitigation_id"] not in seen_ids:
-                all_mitigations.append(mitigation)
-                seen_ids.add(mitigation["mitigation_id"])
-    return all_mitigations
-```
-
-**STIX Bundle Integration:**
-
-```python
-# src/detonate/output/stix.py
-from stix2 import CourseOfAction, Relationship
-
-def generate_stix_bundle(...):
-    # ... existing code ...
-    
-    # Add CourseOfAction objects
-    created_mitigations = {}
-    for finding in findings:
-        mitigations = get_mitigations_for_technique(finding.technique_id)
-        for mitigation_data in mitigations:
-            if mitigation_data["mitigation_id"] not in created_mitigations:
-                coa = CourseOfAction(
-                    id=mitigation_data["stix_id"],
-                    name=mitigation_data["name"],
-                    description=mitigation_data["description"],
-                    external_references=[{
-                        "source_name": "mitre-attack",
-                        "external_id": mitigation_data["mitigation_id"],
-                        "url": mitigation_data["url"]
-                    }]
-                )
-                created_mitigations[mitigation_data["mitigation_id"]] = coa
-                objects.append(coa)
-            
-            # Create mitigates relationship
-            relationship = Relationship(
-                id=f"relationship--{uuid.uuid4()}",
-                relationship_type="mitigates",
-                source_ref=created_mitigations[mitigation_data["mitigation_id"]].id,
-                target_ref=created_patterns[finding.technique_id].id
-            )
-            objects.append(relationship)
-```
-
-**Markdown Report Enhancement:**
-
-```python
-# src/detonate/output/report.py
-def generate_markdown_report(...):
-    # ... existing sections ...
-    
-    # NEW: Recommended Defenses section
-    f.write("## Recommended Defenses\n\n")
-    f.write("The following mitigations are recommended based on detected techniques:\n\n")
-    
-    mitigations_seen = {}
-    for finding in findings:
-        for mitigation in get_mitigations_for_technique(finding.technique_id):
-            if mitigation["mitigation_id"] not in mitigations_seen:
-                mitigations_seen[mitigation["mitigation_id"]] = mitigation
-                f.write(f"### {mitigation['name']} ({mitigation['mitigation_id']})\n")
-                f.write(f"{mitigation['description']}\n\n")
-                f.write(f"[Learn more]({mitigation['url']})\n\n")
-```
-
-**Acceptance Criteria:**
-- [ ] `mitigations.py` created with mappings for all 268 course-of-action objects
-- [ ] STIX bundles include `CourseOfAction` objects
-- [ ] `mitigates` relationships created (mitigation → technique)
-- [ ] Markdown reports include "Recommended Defenses" section
-- [ ] Unit tests verify mitigation lookup functionality
-
-#### 2.2 Data Source Mapping
-
-**Data Source:** 38 data sources + 109 data components from STIX data
-
-**Implementation:**
-
-```python
-# New file: src/detonate/mapping/data_sources.py
-"""MITRE ATT&CK data source mappings for detection opportunities."""
-
-TECHNIQUE_TO_DATA_SOURCE = {
-    "T1055.001": [
-        {
-            "source_id": "DS0009",
-            "source_name": "Process Monitoring",
-            "component_id": "DC0001",
-            "component_name": "Process Injection Detection",
-            "description": "Monitor process creation and memory allocation patterns for injection indicators.",
-            "stix_refs": {
-                "data_source": "x-mitre-data-source--969e530f-...",
-                "data_component": "x-mitre-data-component--..."
-            }
-        },
-        {
-            "source_id": "DS0011",
-            "source_name": "Windows Registry",
-            "component_id": "DC0002",
-            "component_name": "Registry Key Creation",
-            "description": "Monitor registry keys commonly used for persistence via injection.",
-            "stix_refs": {...}
-        }
-    ],
-    "T1059.001": [
-        {
-            "source_id": "DS0012",
-            "source_name": "Script Logs",
-            "component_id": "DC0003",
-            "component_name": "PowerShell Script Block Logging",
-            "description": "Enable PowerShell script block logging to capture malicious commands.",
-            "stix_refs": {...}
-        },
-        {
-            "source_id": "DS0013",
-            "source_name": "Command Logs",
-            "component_id": "DC0004",
-            "component_name": "Command Line Interface",
-            "description": "Log command line arguments for PowerShell execution.",
-            "stix_refs": {...}
-        }
-    ]
-}
-
-def get_data_sources_for_technique(technique_id: str) -> list[dict]:
-    """Return list of data sources for a given technique."""
-    return TECHNIQUE_TO_DATA_SOURCE.get(technique_id, [])
-```
-
-**STIX Bundle Integration:**
-
-```python
-# src/detonate/output/stix.py
-from stix2 import Bundle
-
-def generate_stix_bundle(...):
-    # ... existing code ...
-    
-    # Add data source and data component objects
-    created_sources = {}
-    created_components = {}
-    
-    for finding in findings:
-        data_sources = get_data_sources_for_technique(finding.technique_id)
-        for ds_data in data_sources:
-            # Create data source if not exists
-            if ds_data["source_id"] not in created_sources:
-                source = {
-                    "type": "x-mitre-data-source",
-                    "id": ds_data["stix_refs"]["data_source"],
-                    "spec_version": "2.1",
-                    "name": ds_data["source_name"],
-                    "description": f"Data source for detecting {finding.technique_name}",
-                    "external_references": [{
-                        "source_name": "mitre-attack",
-                        "external_id": ds_data["source_id"]
-                    }]
-                }
-                created_sources[ds_data["source_id"]] = source
-                objects.append(source)
-            
-            # Create data component if not exists
-            if ds_data["component_id"] not in created_components:
-                component = {
-                    "type": "x-mitre-data-component",
-                    "id": ds_data["stix_refs"]["data_component"],
-                    "spec_version": "2.1",
-                    "name": ds_data["component_name"],
-                    "description": ds_data["description"],
-                    "data_source_ref": ds_data["stix_refs"]["data_source"]
-                }
-                created_components[ds_data["component_id"]] = component
-                objects.append(component)
-```
-
-**Markdown Report Enhancement:**
-
-```python
-# src/detonate/output/report.py
-def generate_markdown_report(...):
-    # ... existing sections ...
-    
-    # NEW: Detection Opportunities section
-    f.write("## Detection Opportunities\n\n")
-    f.write("The following data sources can be used to detect the observed behavior:\n\n")
-    
-    data_sources_seen = {}
-    for finding in findings:
-        for ds in get_data_sources_for_technique(finding.technique_id):
-            key = f"{ds['source_id']}:{ds['component_id']}"
-            if key not in data_sources_seen:
-                data_sources_seen[key] = ds
-                f.write(f"### {ds['source_name']} - {ds['component_name']}\n")
-                f.write(f"{ds['description']}\n\n")
-                f.write(f"**Data Source ID:** `{ds['source_id']}`  \n")
-                f.write(f"**Data Component ID:** `{ds['component_id']}`\n\n")
-```
-
-**Acceptance Criteria:**
-- [ ] `data_sources.py` created with mappings for all techniques
-- [ ] STIX bundles include `x-mitre-data-source` and `x-mitre-data-component` objects
-- [ ] Markdown reports include "Detection Opportunities" section
-- [ ] Unit tests verify data source lookup functionality
-
----
-
-### Phase 3: Enhanced STIX 2.1 Features (MEDIUM)
-
-**Timeline:** 3 weeks  
-**Dependencies:** Phase 1 & 2 complete  
-**Owner:** Engineering Team
-
-#### 3.1 STIX Indicator Generation
-
-**Environment Variable:** `DETONATE_GENERATE_INDICATORS` (default: `false`)
-
-**Implementation:**
-
-```python
-# New file: src/detonate/output/indicators.py
-"""STIX 2.1 Indicator generation from observed API calls."""
-
-import os
-from stix2 import Indicator
-from datetime import datetime, timezone
-
-def should_generate_indicators() -> bool:
-    """Check if indicator generation is enabled."""
-    return os.getenv("DETONATE_GENERATE_INDICATORS", "false").lower() == "true"
-
-def generate_indicator_from_api_call(api_call: APICallRecord) -> Indicator | None:
-    """
-    Generate STIX Indicator from a single API call.
-    
-    Returns None if no indicator can be generated.
-    """
-    if not should_generate_indicators():
-        return None
-    
-    api_name = api_call.api_name or api_call.syscall_name
-    params = api_call.params or {}
-    
-    # Process execution indicators
-    if api_name in ("CreateProcessA", "CreateProcessW"):
-        cmd_line = params.get("lpCommandLine", "")
-        if cmd_line:
-            # PowerShell detection
-            if "powershell" in cmd_line.lower():
-                pattern = f"[process:command_line MATCH '(?i).*powershell.*']"
-                return _create_indicator(
-                    pattern=pattern,
-                    name="PowerShell Execution Detected",
-                    description=f"Detected PowerShell execution via {api_name}",
-                    confidence=_calculate_confidence(api_call)
-                )
-            # Command shell detection
-            elif "cmd.exe" in cmd_line.lower() or "cmd /c" in cmd_line.lower():
-                pattern = f"[process:command_line MATCH '(?i).*cmd\\\\.exe.*']"
-                return _create_indicator(
-                    pattern=pattern,
-                    name="Command Shell Execution Detected",
-                    description=f"Detected cmd.exe execution via {api_name}",
-                    confidence=_calculate_confidence(api_call)
-                )
-    
-    # Registry persistence indicators
-    if api_name in ("RegSetValueExA", "RegSetValueExW", "RegCreateKeyExA"):
-        sub_key = params.get("lpSubKey", "") or params.get("lpValueName", "")
-        if sub_key and "run" in sub_key.lower():
-            pattern = f"[windows-registry-key:key MATCH '(?i).*\\\\CurrentVersion\\\\Run.*']"
-            return _create_indicator(
-                pattern=pattern,
-                name="Registry Run Key Persistence",
-                description=f"Detected registry persistence via {api_name}",
-                confidence=_calculate_confidence(api_call)
-            )
-    
-    # Network C2 indicators
-    if api_name in ("InternetConnectA", "HttpOpenRequestA", "socket", "connect"):
-        server = params.get("lpszServerName", "") or params.get("server", "")
-        if server and not server.startswith("127."):
-            # Domain or IP indicator
-            if "." in server:
-                pattern = f"[network-traffic:dst_ref.value = '{server}']"
-                return _create_indicator(
-                    pattern=pattern,
-                    name=f"C2 Communication: {server}",
-                    description=f"Detected network connection to {server}",
-                    confidence=_calculate_confidence(api_call)
-                )
-    
-    # File creation indicators (suspicious paths)
-    if api_name in ("CreateFileA", "CreateFileW", "open", "openat"):
-        file_path = params.get("lpFileName", "") or params.get("filename", "") or params.get("pathname", "")
-        if file_path:
-            # Check for suspicious paths
-            suspicious_paths = ["/etc/shadow", "/etc/passwd", ".ssh/id_rsa", "AppData/Roaming"]
-            if any(s in file_path for s in suspicious_paths):
-                pattern = f"[file:name = '{file_path}']"
-                return _create_indicator(
-                    pattern=pattern,
-                    name=f"Suspicious File Access: {file_path}",
-                    description=f"Detected access to sensitive file {file_path}",
-                    confidence=_calculate_confidence(api_call)
-                )
-    
-    return None
-
-def _create_indicator(pattern: str, name: str, description: str, confidence: float) -> Indicator:
-    """Create a STIX Indicator object."""
-    return Indicator(
-        id=f"indicator--{uuid.uuid4()}",
-        spec_version="2.1",
-        created=datetime.now(timezone.utc),
-        modified=datetime.now(timezone.utc),
-        name=name,
-        description=description,
-        pattern=pattern,
-        pattern_type="stix",
-        valid_from=datetime.now(timezone.utc),
-        indicator_types=["malicious-activity"],
-        confidence=confidence,
-        object_marking_refs=["marking-definition--fa42a846-8d90-4e51-bc29-71d5b4802168"]
-    )
-
-def _calculate_confidence(api_call: APICallRecord) -> int:
-    """Calculate confidence score (0-100) for indicator."""
-    base_confidence = 50
-    
-    # Boost for high-confidence technique matches
-    if api_call.confidence == "high":
-        base_confidence = 80
-    elif api_call.confidence == "medium":
-        base_confidence = 65
-    
-    # Boost for multiple evidence items
-    # (Would need to track evidence count in session)
-    
-    return min(100, base_confidence)
-
-def generate_indicators_for_session(session: AnalysisSession) -> list[Indicator]:
-    """Generate all indicators for an analysis session."""
-    indicators = []
-    
-    for api_call in session.api_calls:
-        indicator = generate_indicator_from_api_call(api_call)
-        if indicator:
-            indicators.append(indicator)
-    
-    return indicators
-```
-
-**STIX Bundle Integration:**
-
-```python
-# src/detonate/output/stix.py
-from .indicators import should_generate_indicators, generate_indicators_for_session
-
-def generate_stix_bundle(...):
-    # ... existing code ...
-    
-    # Add indicators if enabled
-    if should_generate_indicators():
-        indicators = generate_indicators_for_session(session)
-        objects.extend(indicators)
-        
-        # Create 'indicates' relationships (indicator → malware)
-        for indicator in indicators:
-            relationship = Relationship(
-                id=f"relationship--{uuid.uuid4()}",
-                relationship_type="indicates",
-                source_ref=indicator.id,
-                target_ref=malware_id,
-                description="This indicator was observed during analysis of the malware sample"
-            )
-            objects.append(relationship)
-```
-
-**Acceptance Criteria:**
-- [ ] `indicators.py` created with pattern generation logic
-- [ ] ENV var `DETONATE_GENERATE_INDICATORS` controls feature
-- [ ] STIX bundles include `Indicator` objects when enabled
-- [ ] `indicates` relationships created (indicator → malware)
-- [ ] Unit tests for pattern generation from various API calls
-
-#### 3.2 Infrastructure Objects
-
-**Implementation:**
-
-```python
-# src/detonate/core/session.py
-from dataclasses import dataclass, field
-from typing import Any
-
-@dataclass
-class InfrastructureRecord:
-    """Record of infrastructure observed during analysis."""
-    name: str
-    infrastructure_types: list[str]
-    first_seen: datetime
-    last_seen: datetime
-    related_api_calls: list[APICallRecord] = field(default_factory=list)
-    confidence: str = "medium"
-
-class AnalysisSession:
-    # ... existing fields ...
-    infrastructure: list[InfrastructureRecord] = field(default_factory=list)
-    
-    def add_infrastructure(
-        self,
-        name: str,
-        infrastructure_types: list[str],
-        related_api_call: APICallRecord
-    ) -> None:
-        """Add or update infrastructure record."""
-        # Check if infrastructure already exists
-        for infra in self.infrastructure:
-            if infra.name == name:
-                infra.related_api_calls.append(related_api_call)
-                infra.last_seen = related_api_call.timestamp
-                return
-        
-        # Create new record
-        self.infrastructure.append(InfrastructureRecord(
-            name=name,
-            infrastructure_types=infrastructure_types,
-            first_seen=related_api_call.timestamp,
-            last_seen=related_api_call.timestamp,
-            related_api_calls=[related_api_call],
-            confidence=related_api_call.confidence or "medium"
-        ))
-```
-
-**Hook Integration:**
-
-```python
-# src/detonate/core/hooks/windows.py
-def hook_InternetConnectA(self, ql: Any) -> None:
-    """Hook InternetConnectA for C2 infrastructure detection."""
-    lpszServerName = ql.os.f_param_read(1)
-    server_name = ql.mem.string(lpszServerName) if lpszServerName else ""
-    
-    params = {"lpszServerName": server_name}
-    record = self._record_api_call("InternetConnectA", params)
-    
-    # NEW: Track infrastructure
-    if server_name and not server_name.startswith("127."):
-        self.session.add_infrastructure(
-            name=f"C2 Server: {server_name}",
-            infrastructure_types=["command-and-control"],
-            related_api_call=record
-        )
-    
-    # ... existing technique detection code ...
-```
-
-**STIX Bundle Integration:**
-
-```python
-# src/detonate/output/stix.py
-from stix2 import Infrastructure
-
-def generate_stix_bundle(...):
-    # ... existing code ...
-    
-    # Add infrastructure objects
-    for infra_record in session.infrastructure:
-        infrastructure = Infrastructure(
-            id=f"infrastructure--{uuid.uuid4()}",
-            spec_version="2.1",
-            name=infra_record.name,
-            description=f"Infrastructure observed during malware analysis",
-            infrastructure_types=infra_record.infrastructure_types,
-            first_seen=infra_record.first_seen,
-            last_seen=infra_record.last_seen,
-            confidence=infra_record.confidence
-        )
-        objects.append(infrastructure)
-        
-        # Create 'consists-of' relationship (infrastructure → observable)
-        # And 'related-to' relationship (malware → infrastructure)
-        relationship = Relationship(
-            id=f"relationship--{uuid.uuid4()}",
-            relationship_type="controls",
-            source_ref=malware_id,
-            target_ref=infrastructure.id,
-            description="Malware communicated with this infrastructure"
-        )
-        objects.append(relationship)
-```
-
-**Acceptance Criteria:**
-- [ ] `InfrastructureRecord` dataclass added to session
-- [ ] Network hooks track infrastructure
-- [ ] STIX bundles include `Infrastructure` objects
-- [ ] `controls` relationships created (malware → infrastructure)
-- [ ] Unit tests for infrastructure tracking
-
-#### 3.3 Live CVE Lookup
-
-**Environment Variables:**
-- `DETONATE_CVE_LOOKUP` (default: `false`)
-- `DETONATE_NVD_API_KEY` (optional, for higher rate limits)
-
-**Implementation:**
-
-```python
-# New file: src/detonate/utils/cve_lookup.py
-"""Live CVE lookup via NVD API."""
-
-import os
-import time
-import requests
-from typing import Optional
-from functools import lru_cache
-
-class CVELookup:
-    """NVD API client with rate limiting and caching."""
-    
-    def __init__(self):
-        self.enabled = os.getenv("DETONATE_CVE_LOOKUP", "false").lower() == "true"
-        self.api_key = os.getenv("DETONATE_NVD_API_KEY")
-        self.cache = {}
-        self.last_request_time = 0
-        self.min_request_interval = 0.6  # 5 requests per 30 seconds without API key
-        
-        if self.api_key:
-            self.min_request_interval = 0.06  # 50 requests per 30 seconds with API key
-    
-    def _rate_limit(self) -> None:
-        """Enforce rate limiting."""
-        if not self.enabled:
-            return
-        
-        current_time = time.time()
-        elapsed = current_time - self.last_request_time
-        
-        if elapsed < self.min_request_interval:
-            time.sleep(self.min_request_interval - elapsed)
-        
-        self.last_request_time = time.time()
-    
-    @lru_cache(maxsize=1000)
-    def lookup(self, cve_id: str) -> Optional[dict]:
-        """
-        Lookup CVE information from NVD API.
-        
-        Returns None if:
-        - CVE lookup is disabled
-        - CVE not found
-        - API error occurs
-        """
-        if not self.enabled:
-            return None
-        
-        if cve_id in self.cache:
-            return self.cache[cve_id]
-        
-        self._rate_limit()
-        
-        headers = {}
-        if self.api_key:
-            headers["apiKey"] = self.api_key
-        
-        try:
-            response = requests.get(
-                f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}",
-                headers=headers,
-                timeout=10
-            )
-            response.raise_for_status()
-            
-            data = response.json()
-            if data.get("totalResults", 0) > 0:
-                cve_data = data["vulnerabilities"][0]["cve"]
-                result = {
-                    "cve_id": cve_id,
-                    "description": self._extract_description(cve_data),
-                    "cvss_score": self._extract_cvss(cve_data),
-                    "severity": self._extract_severity(cve_data),
-                    "published": cve_data.get("published"),
-                    "modified": cve_data.get("lastModified"),
-                    "references": cve_data.get("references", [])
-                }
-                self.cache[cve_id] = result
-                return result
-        except Exception as e:
-            # Log error but don't fail
-            import structlog
-            log = structlog.get_logger()
-            log.warning("cve_lookup_failed", cve_id=cve_id, error=str(e))
-        
-        return None
-    
-    def _extract_description(self, cve_data: dict) -> str:
-        """Extract primary description from CVE."""
-        descriptions = cve_data.get("descriptions", [])
-        for desc in descriptions:
-            if desc.get("lang") == "en":
-                return desc.get("value", "")
-        return ""
-    
-    def _extract_cvss(self, cve_data: dict) -> Optional[float]:
-        """Extract CVSS v3.1 base score."""
-        metrics = cve_data.get("metrics", {})
-        cvss_data = metrics.get("cvssMetricV31", [{}])[0]
-        return cvss_data.get("cvssData", {}).get("baseScore")
-    
-    def _extract_severity(self, cve_data: dict) -> str:
-        """Extract severity rating."""
-        metrics = cve_data.get("metrics", {})
-        cvss_data = metrics.get("cvssMetricV31", [{}])[0]
-        return cvss_data.get("cvssData", {}).get("baseSeverity", "UNKNOWN")
-
-
-# Global instance
-cve_lookup = CVELookup()
-
-def lookup_cve(cve_id: str) -> Optional[dict]:
-    """Convenience function for CVE lookup."""
-    return cve_lookup.lookup(cve_id)
-```
-
-**Integration with Analysis:**
-
-```python
-# src/detonate/core/hooks/windows.py
-from ...utils.cve_lookup import lookup_cve
-
-def hook_CreateFileA(self, ql: Any) -> None:
-    """Hook CreateFileA with CVE detection."""
-    lpFileName = ql.os.f_param_read(0)
-    file_name = ql.mem.string(lpFileName) if lpFileName else ""
-    
-    params = {"lpFileName": file_name}
-    record = self._record_api_call("CreateFileA", params)
-    
-    # Check for CVE indicators in file path
-    cve_matches = self._detect_cve_indicators(file_name)
-    for cve_id in cve_matches:
-        cve_data = lookup_cve(cve_id)
-        if cve_data:
-            self.session.add_vulnerability(
-                cve_id=cve_id,
-                cve_data=cve_data,
-                related_api_call=record
-            )
-```
-
-**STIX Bundle Integration:**
-
-```python
-# src/detonate/output/stix.py
-from stix2 import Vulnerability
-
-def generate_stix_bundle(...):
-    # ... existing code ...
-    
-    # Add vulnerability objects
-    for vuln_record in session.vulnerabilities:
-        vulnerability = Vulnerability(
-            id=f"vulnerability--{uuid.uuid4()}",
-            spec_version="2.1",
-            name=vuln_record.cve_id,
-            description=vuln_record.cve_data.get("description", ""),
-            external_references=[{
-                "source_name": "CVE",
-                "external_id": vuln_record.cve_id,
-                "url": f"https://nvd.nist.gov/vuln/detail/{vuln_record.cve_id}"
-            }]
-        )
-        objects.append(vulnerability)
-        
-        # Create 'targets' relationship (attack-pattern → vulnerability)
-        if vuln_record.technique_id:
-            relationship = Relationship(
-                id=f"relationship--{uuid.uuid4()}",
-                relationship_type="targets",
-                source_ref=created_patterns[vuln_record.technique_id].id,
-                target_ref=vulnerability.id,
-                description=f"Technique exploits {vuln_record.cve_id}"
-            )
-            objects.append(relationship)
-```
-
-**Acceptance Criteria:**
-- [ ] `cve_lookup.py` created with NVD API client
-- [ ] ENV vars `DETONATE_CVE_LOOKUP` and `DETONATE_NVD_API_KEY` implemented
-- [ ] Rate limiting enforced (5 req/30s without key, 50 req/30s with key)
-- [ ] LRU caching implemented (1000 entry cache)
-- [ ] STIX bundles include `Vulnerability` objects when CVEs detected
-- [ ] Unit tests for CVE lookup (mocked API responses)
-
----
-
-### Phase 4: Threat Actor Attribution (MEDIUM)
-
-**Timeline:** 2-3 weeks  
-**Dependencies:** Phase 1-3 complete  
-**Owner:** Intelligence Team
-
-#### 4.1 TTP-Based Attribution
-
-**Environment Variable:** `DETONATE_ATTRIBUTION_THRESHOLD` (default: `0.5`)
-
-**Implementation:**
-
-```python
-# New file: src/detonate/mapping/attribution.py
-"""Threat actor attribution based on TTP overlap."""
-
-import os
-from typing import List, Tuple
-from .stix_data import STIXDataStore
-
-def get_attribution_threshold() -> float:
-    """Get attribution threshold from environment."""
-    try:
-        return float(os.getenv("DETONATE_ATTRIBUTION_THRESHOLD", "0.5"))
-    except ValueError:
-        return 0.5
-
-def attribute_to_threat_actors(
-    detected_techniques: set[str],
-    stix_store: STIXDataStore
-) -> List[Tuple[dict, float]]:
-    """
-    Attribute detected TTPs to known threat actors.
-    
-    Args:
-        detected_techniques: Set of technique IDs detected during analysis
-        stix_store: STIX data store with intrusion-set objects
-    
-    Returns:
-        List of (intrusion_set_data, confidence_score) tuples, sorted by confidence
-    """
-    threshold = get_attribution_threshold()
-    results = []
-    
-    # Get all intrusion sets from STIX data
-    intrusion_sets = stix_store.get_all_intrusion_sets()
-    
-    for intrusion_set in intrusion_sets:
-        # Get known TTPs for this intrusion set
-        known_ttps = set(intrusion_set.get("ttps", []))
-        
-        if not known_ttps:
-            continue
-        
-        # Calculate overlap
-        overlap = detected_techniques & known_ttps
-        overlap_count = len(overlap)
-        
-        if overlap_count == 0:
-            continue
-        
-        # Calculate confidence as overlap ratio
-        confidence = overlap_count / len(known_ttps)
-        
-        if confidence >= threshold:
-            results.append((intrusion_set, confidence, overlap))
-    
-    # Sort by confidence descending
-    results.sort(key=lambda x: x[1], reverse=True)
-    
-    return [(is_data, confidence) for is_data, confidence, _ in results]
-
-def get_intrusion_set_ttps(intrusion_set_id: str, stix_store: STIXDataStore) -> set[str]:
-    """Get all TTPs associated with an intrusion set."""
-    intrusion_set = stix_store.get_intrusion_set(intrusion_set_id)
-    if not intrusion_set:
-        return set()
-    
-    return set(intrusion_set.get("ttps", []))
-```
-
-**STIX Data Store Enhancement:**
-
-```python
-# src/detonate/mapping/stix_data.py
-class STIXDataStore:
-    # ... existing code ...
-    
-    def __init__(self, stix_path: str | Path | None = None):
-        # ... existing fields ...
-        self.intrusion_sets: dict[str, dict[str, Any]] = {}
-        self.relationships_by_type: dict[str, list[dict]] = {}
-        # ... rest of init ...
-    
-    def _index_objects(self) -> None:
-        """Index STIX objects for fast lookup."""
-        objects = self.bundle.get("objects", [])
-        
-        # Index intrusion sets
-        for obj in objects:
-            if obj.get("type") == "intrusion-set":
-                external_refs = obj.get("external_references", [])
-                attack_id = None
-                for ref in external_refs:
-                    if ref.get("source_name") == "mitre-attack":
-                        attack_id = ref.get("external_id")
-                        break
-                
-                if attack_id:
-                    self.intrusion_sets[attack_id] = {
-                        "id": obj.get("id"),
-                        "intrusion_set_id": attack_id,
-                        "name": obj.get("name", ""),
-                        "description": obj.get("description", ""),
-                        "aliases": obj.get("aliases", []),
-                        "ttps": [],  # Will be populated from relationships
-                        "url": f"https://attack.mitre.org/groups/{attack_id}/"
-                    }
-        
-        # Index relationships
-        for obj in objects:
-            if obj.get("type") == "relationship":
-                rel_type = obj.get("relationship_type")
-                if rel_type not in self.relationships_by_type:
-                    self.relationships_by_type[rel_type] = []
-                self.relationships_by_type[rel_type].append(obj)
-        
-        # Populate TTPs for each intrusion set from 'uses' relationships
-        for rel in self.relationships_by_type.get("uses", []):
-            source_ref = rel.get("source_ref", "")
-            target_ref = rel.get("target_ref", "")
-            
-            # Find intrusion set by source_ref
-            for is_data in self.intrusion_sets.values():
-                if is_data["id"] == source_ref:
-                    # Extract technique ID from target_ref (attack-pattern--xxx)
-                    if target_ref.startswith("attack-pattern--"):
-                        # Look up technique to get external ID
-                        for tech in self.techniques.values():
-                            if tech["id"] == target_ref:
-                                is_data["ttps"].append(tech["technique_id"])
-                                break
-    
-    def get_all_intrusion_sets(self) -> list[dict]:
-        """Get all intrusion sets."""
-        return list(self.intrusion_sets.values())
-    
-    def get_intrusion_set(self, intrusion_set_id: str) -> dict | None:
-        """Get intrusion set by ID."""
-        return self.intrusion_sets.get(intrusion_set_id)
-```
-
-**STIX Bundle Integration:**
-
-```python
-# src/detonate/output/stix.py
-from stix2 import IntrusionSet, Relationship
-from ..mapping.attribution import attribute_to_threat_actors
-
-def generate_stix_bundle(...):
-    # ... existing code ...
-    
-    # Perform attribution
-    detected_technique_ids = {f.technique_id for f in findings}
-    attributed_actors = attribute_to_threat_actors(detected_technique_ids, stix_store)
-    
-    # Add intrusion set objects and relationships
-    created_intrusion_sets = {}
-    for intrusion_set_data, confidence in attributed_actors:
-        if intrusion_set_data["intrusion_set_id"] not in created_intrusion_sets:
-            intrusion_set = IntrusionSet(
-                id=intrusion_set_data["id"],
-                spec_version="2.1",
-                name=intrusion_set_data["name"],
-                description=intrusion_set_data["description"],
-                aliases=intrusion_set_data["aliases"],
-                external_references=[{
-                    "source_name": "mitre-attack",
-                    "external_id": intrusion_set_data["intrusion_set_id"],
-                    "url": intrusion_set_data["url"]
-                }]
-            )
-            created_intrusion_sets[intrusion_set_data["intrusion_set_id"]] = intrusion_set
-            objects.append(intrusion_set)
-        
-        # Create 'attributed-to' relationship (malware → intrusion-set)
-        relationship = Relationship(
-            id=f"relationship--{uuid.uuid4()}",
-            relationship_type="attributed-to",
-            source_ref=malware_id,
-            target_ref=intrusion_set.id,
-            description=f"Malware behavior attributed to {intrusion_set_data['name']} (confidence: {confidence:.0%})",
-            confidence=confidence
-        )
-        objects.append(relationship)
-```
-
-**Markdown Report Enhancement:**
-
-```python
-# src/detonate/output/report.py
-from ..mapping.attribution import attribute_to_threat_actors, get_attribution_threshold
-
-def generate_markdown_report(...):
-    # ... existing sections ...
-    
-    # NEW: Possible Attribution section
-    detected_technique_ids = {f.technique_id for f in findings}
-    attributed_actors = attribute_to_threat_actors(detected_technique_ids, stix_store)
-    
-    if attributed_actors:
-        f.write("## Possible Attribution\n\n")
-        f.write(f"The following threat actors have been identified based on TTP overlap (threshold: {get_attribution_threshold():.0%}):\n\n")
-        
-        for intrusion_set_data, confidence in attributed_actors[:5]:  # Top 5 matches
-            f.write(f"### {intrusion_set_data['name']} ({intrusion_set_data['intrusion_set_id']})\n")
-            f.write(f"**Confidence:** {confidence:.0%}\n\n")
-            f.write(f"{intrusion_set_data['description']}\n\n")
-            
-            if intrusion_set_data.get("aliases"):
-                f.write(f"**Also known as:** {', '.join(intrusion_set_data['aliases'])}\n\n")
-            
-            f.write(f"[Learn more]({intrusion_set_data['url']})\n\n")
-```
-
-**Acceptance Criteria:**
-- [ ] `attribution.py` created with TTP overlap algorithm
-- [ ] ENV var `DETONATE_ATTRIBUTION_THRESHOLD` controls minimum confidence
-- [ ] STIX data store indexes intrusion sets and relationships
-- [ ] STIX bundles include `IntrusionSet` objects when attribution found
-- [ ] `attributed-to` relationships created (malware → intrusion-set)
-- [ ] Markdown reports include "Possible Attribution" section
-- [ ] Unit tests for attribution algorithm
-
----
-
-## Environment Variables Reference
-
-| Variable | Default | Description | Phase |
-|----------|---------|-------------|-------|
-| `DETONATE_GENERATE_INDICATORS` | `false` | Enable STIX Indicator generation | 3.1 |
-| `DETONATE_CVE_LOOKUP` | `false` | Enable live NVD API lookups | 3.3 |
-| `DETONATE_NVD_API_KEY` | `None` | API key for NVD (higher rate limits) | 3.3 |
-| `DETONATE_ATTRIBUTION_THRESHOLD` | `0.5` | Minimum confidence for threat actor attribution | 4.1 |
-
----
-
-## Database Schema Changes
-
-```sql
--- Mitigations table
-CREATE TABLE IF NOT EXISTS mitigations (
-    mitigation_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT,
-    stix_id TEXT UNIQUE,
-    url TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Data sources table
-CREATE TABLE IF NOT EXISTS data_sources (
-    source_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    stix_id TEXT UNIQUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Data components table
-CREATE TABLE IF NOT EXISTS data_components (
-    component_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    data_source_id TEXT,
-    stix_id TEXT UNIQUE,
-    description TEXT,
-    FOREIGN KEY (data_source_id) REFERENCES data_sources(source_id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Technique-mitigation mapping
-CREATE TABLE IF NOT EXISTS technique_mitigations (
-    technique_id TEXT NOT NULL,
-    mitigation_id TEXT NOT NULL,
-    PRIMARY KEY (technique_id, mitigation_id),
-    FOREIGN KEY (mitigation_id) REFERENCES mitigations(mitigation_id)
-);
-
--- Technique-data source mapping
-CREATE TABLE IF NOT EXISTS technique_data_sources (
-    technique_id TEXT NOT NULL,
-    data_source_id TEXT NOT NULL,
-    component_id TEXT NOT NULL,
-    PRIMARY KEY (technique_id, data_source_id, component_id),
-    FOREIGN KEY (data_source_id) REFERENCES data_sources(source_id),
-    FOREIGN KEY (component_id) REFERENCES data_components(component_id)
-);
-
--- Indexes for performance
-CREATE INDEX IF NOT EXISTS idx_technique_mitigations ON technique_mitigations(technique_id);
-CREATE INDEX IF NOT EXISTS idx_technique_data_sources ON technique_data_sources(technique_id);
-```
-
-**Migration Strategy:**
-- Auto-migrate on first run using Alembic
-- Pre-populate tables from STIX data at application startup
-- Cache in-memory for fast lookups
-
----
-
-## Testing Strategy
-
-### Unit Tests (Synthesized Hooks)
-
-```python
-# tests/test_enhanced_mapping.py
-import pytest
-from unittest.mock import Mock, MagicMock
-from src.detonate.core.session import AnalysisSession
-from src.detonate.core.hooks.windows import WindowsHooks
-from src.detonate.mapping.mitigations import get_mitigations_for_technique
-from src.detonate.mapping.data_sources import get_data_sources_for_technique
-
-def create_mock_ql():
-    """Create mock Qiling instance."""
-    ql = Mock()
-    ql.mem = Mock()
-    ql.mem.string = Mock(return_value="test")
-    ql.mem.wstring = Mock(return_value="test")
-    ql.os = Mock()
-    ql.os.f_param_read = Mock(return_value=0x1000)
-    ql.arch = Mock()
-    ql.arch.pc = 0x401000
-    return ql
-
-class TestCredentialAccessMapping:
-    """Test credential access technique detection."""
-    
-    def test_lsass_access_detection(self):
-        """Test LSASS access via CredEnumerateA."""
-        session = AnalysisSession("test", "windows", "x86")
-        ql = create_mock_ql()
-        ql.mem.string.return_value = "Vault"  # CredEnumerateA parameter
-        
-        hooks = WindowsHooks(session, ql)
-        hooks.hook_CredEnumerateA(ql)
-        
-        findings = session.get_findings()
-        assert any(f.technique_id == "T1003.001" for f in findings)
-    
-    def test_sam_access_detection(self):
-        """Test SAM database access detection."""
-        session = AnalysisSession("test", "windows", "x86")
-        ql = create_mock_ql()
-        ql.mem.string.return_value = "SAM"
-        
-        hooks = WindowsHooks(session, ql)
-        hooks.hook_CreateFileA(ql)
-        
-        findings = session.get_findings()
-        assert any(f.technique_id == "T1003.002" for f in findings)
-
-class TestMitigationMapping:
-    """Test mitigation recommendation functionality."""
-    
-    def test_mitigation_lookup(self):
-        """Test mitigation lookup for technique."""
-        mitigations = get_mitigations_for_technique("T1055.001")
-        assert len(mitigations) > 0
-        assert all("mitigation_id" in m for m in mitigations)
-    
-    def test_all_techniques_have_mitigations(self):
-        """Test that all detected techniques have mitigation mappings."""
-        # Get all technique IDs from windows_map and linux_map
-        from src.detonate.mapping.windows_map import API_TO_TECHNIQUE
-        from src.detonate.mapping.linux_map import SYSCALL_TO_TECHNIQUE
-        
-        technique_ids = set()
-        for api_data in API_TO_TECHNIQUE.values():
-            technique_ids.add(api_data["technique_id"])
-            # Check param_checks for sub-techniques
-            if "param_checks" in api_data:
-                for checks in api_data["param_checks"].values():
-                    for technique in checks.values():
-                        technique_ids.add(technique["id"])
-        
-        # Verify all have mitigations
-        missing = []
-        for tech_id in technique_ids:
-            if not get_mitigations_for_technique(tech_id):
-                missing.append(tech_id)
-        
-        # Allow some techniques without mitigations
-        assert len(missing) < len(technique_ids) * 0.1  # < 10% missing
-
-class TestDataSourceMapping:
-    """Test data source mapping functionality."""
-    
-    def test_data_source_lookup(self):
-        """Test data source lookup for technique."""
-        data_sources = get_data_sources_for_technique("T1055.001")
-        assert len(data_sources) > 0
-        assert all("source_id" in ds for ds in data_sources)
-        assert all("component_id" in ds for ds in data_sources)
-
-class TestLinuxContainerEscape:
-    """Test container escape detection."""
-    
-    def test_docker_socket_access(self):
-        """Test Docker socket access detection."""
-        from src.detonate.core.hooks.linux import LinuxHooks
-        
-        session = AnalysisSession("test", "linux", "x86_64")
-        ql = create_mock_ql()
-        ql.mem.string.return_value = "/var/run/docker.sock"
-        
-        hooks = LinuxHooks(session, ql)
-        # Mock the syscall parameters
-        ql.arch.regs.rdi = 0x1000  # dirfd
-        ql.arch.regs.rsi = 0x2000  # pathname
-        
-        hooks.hook_sys_openat(ql)
-        
-        findings = session.get_findings()
-        assert any(f.technique_id == "T1611" for f in findings)
-    
-    def test_cloud_metadata_access(self):
-        """Test cloud metadata endpoint access."""
-        session = AnalysisSession("test", "linux", "x86_64")
-        ql = create_mock_ql()
-        ql.mem.string.return_value = "169.254.169.254"
-        
-        hooks = LinuxHooks(session, ql)
-        ql.arch.regs.rdi = 2  # AF_INET
-        ql.arch.regs.rsi = 1  # SOCK_STREAM
-        
-        hooks.hook_sys_socket(ql)
-        
-        findings = session.get_findings()
-        assert any(f.technique_id == "T1592.004" for f in findings)
-```
-
-### Integration Tests
-
-```python
-# tests/test_stix_bundle_enhanced.py
-import pytest
-from src.detonate.output.stix import generate_stix_bundle
-from src.detonate.output.indicators import should_generate_indicators
-
-class TestEnhancedSTIXBundle:
-    """Test enhanced STIX bundle generation."""
-    
-    def test_bundle_contains_all_object_types(self, monkeypatch):
-        """Test that bundle contains all expected object types."""
-        # Enable all features
-        monkeypatch.setenv("DETONATE_GENERATE_INDICATORS", "true")
-        monkeypatch.setenv("DETONATE_CVE_LOOKUP", "false")  # Disable for this test
-        
-        session = create_test_session_with_findings([
-            "T1055.001",  # Process Injection
-            "T1059.001",  # PowerShell
-            "T1547.001"   # Registry Persistence
-        ])
-        
-        bundle = generate_stix_bundle(
-            session_id=session.session_id,
-            sample_sha256=session.sample_sha256,
-            sample_path="/test/sample",
-            findings=session.get_findings(),
-            api_calls=session.api_calls
-        )
-        
-        object_types = {o.type for o in bundle.objects}
-        
-        # Core types (always present)
-        assert "malware" in object_types
-        assert "attack-pattern" in object_types
-        assert "relationship" in object_types
-        assert "observed-data" in object_types
-        
-        # Enhanced types (from Phase 2)
-        assert "course-of-action" in object_types
-        assert "x-mitre-data-source" in object_types
-        assert "x-mitre-data-component" in object_types
-        
-        # Indicator types (from Phase 3, when enabled)
-        assert "indicator" in object_types
-    
-    def test_mitigation_relationships(self):
-        """Test that mitigation relationships are created."""
-        session = create_test_session_with_findings(["T1055.001"])
-        bundle = generate_stix_bundle(...)
-        
-        # Find mitigates relationships
-        mitigates_rels = [
-            r for r in bundle.objects
-            if hasattr(r, 'relationship_type') and r.relationship_type == "mitigates"
-        ]
-        
-        assert len(mitigates_rels) > 0
-        # Verify relationship structure
-        for rel in mitigates_rels:
-            assert rel.source_ref.startswith("course-of-action--")
-            assert rel.target_ref.startswith("attack-pattern--")
-    
-    def test_attribution_relationships(self, monkeypatch):
-        """Test threat actor attribution."""
-        monkeypatch.setenv("DETONATE_ATTRIBUTION_THRESHOLD", "0.3")
-        
-        # Create session with techniques common to known threat actors
-        session = create_test_session_with_findings([
-            "T1059.001",  # PowerShell - common APT technique
-            "T1055.001",  # Process Injection
-            "T1071.001"   # Web Protocols
-        ])
-        
-        bundle = generate_stix_bundle(...)
-        
-        # Find attributed-to relationships
-        attribution_rels = [
-            r for r in bundle.objects
-            if hasattr(r, 'relationship_type') and r.relationship_type == "attributed-to"
-        ]
-        
-        # May be empty if no matches above threshold
-        # Just verify structure if present
-        for rel in attribution_rels:
-            assert rel.source_ref.startswith("malware--")
-            assert rel.target_ref.startswith("intrusion-set--")
-            assert hasattr(rel, 'confidence')
-```
-
-### Performance Tests
-
-```python
-# tests/test_performance.py
-import pytest
-import time
-from src.detonate.utils.cve_lookup import CVELookup
-
-class TestCVELookupPerformance:
-    """Test CVE lookup performance and rate limiting."""
-    
-    def test_rate_limiting_without_api_key(self, monkeypatch):
-        """Test rate limiting without API key."""
-        monkeypatch.delenv("DETONATE_NVD_API_KEY", raising=False)
-        monkeypatch.setenv("DETONATE_CVE_LOOKUP", "true")
-        
-        lookup = CVELookup()
-        
-        # Make 6 requests (should take ~3.6 seconds with rate limiting)
-        start = time.time()
-        for i in range(6):
-            lookup.lookup(f"CVE-2021-{i:04d}")
-        elapsed = time.time() - start
-        
-        # Should take at least 3 seconds (5 requests per 30 seconds = 0.6s per request)
-        assert elapsed >= 3.0
-    
-    def test_caching(self, monkeypatch):
-        """Test that repeated lookups use cache."""
-        monkeypatch.setenv("DETONATE_CVE_LOOKUP", "true")
-        
-        lookup = CVELookup()
-        
-        # First lookup (should be slow, hits API)
-        start = time.time()
-        lookup.lookup("CVE-2021-44228")
-        first_elapsed = time.time() - start
-        
-        # Second lookup (should be fast, from cache)
-        start = time.time()
-        lookup.lookup("CVE-2021-44228")
-        second_elapsed = time.time() - start
-        
-        # Cache lookup should be much faster
-        assert second_elapsed < first_elapsed * 0.1
+**Commit:**
+```bash
+git add .gitmodules
+git commit -m "Add Qiling rootfs as git submodule for multi-architecture support"
 ```
 
 ---
 
-## Acceptance Criteria Summary
+### Phase 2: Configuration Updates
 
-### Phase 1: Core Technique Mapping
-- [ ] 80+ Windows APIs mapped with sub-technique granularity
-- [ ] 60+ Linux syscalls mapped with container/cloud detection
-- [ ] Confidence calibration implemented with diminishing returns
-- [ ] All unit tests pass (synthesized hook tests)
+#### 2.1 Update `src/detonate/config.py`
 
-### Phase 2: Mitigation & Data Sources
-- [ ] 268 course-of-action objects integrated
-- [ ] 38 data sources + 109 components mapped
-- [ ] STIX bundles include mitigation and data source objects
-- [ ] Markdown reports include "Recommended Defenses" and "Detection Opportunities" sections
+**Changes:**
 
-### Phase 3: Enhanced STIX 2.1 Features
-- [ ] Indicator generation controlled by ENV var
-- [ ] Infrastructure tracking for C2 servers
-- [ ] Live CVE lookup with rate limiting and caching
-- [ ] All new STIX object types in bundles
+1. **Default rootfs path** (line 87):
+   ```python
+   # OLD:
+   rootfs: str = "/app/data/rootfs"
+   
+   # NEW:
+   rootfs: str = "./data/qiling_rootfs"
+   ```
 
-### Phase 4: Threat Actor Attribution
-- [ ] TTP-based attribution algorithm implemented
-- [ ] Attribution threshold configurable via ENV var
-- [ ] IntrusionSet objects in STIX bundles
-- [ ] "Possible Attribution" section in reports
+2. **Enhanced `get_rootfs_path()` method** (replace lines 92-105):
+   ```python
+   def get_rootfs_path(self, platform: str, arch: str) -> Path:
+       """Get rootfs path for given platform and architecture.
+       
+       Supported architectures (priority order):
+       - High: x86_64, x86, arm64
+       - Medium: arm, mips, mipsel
+       - Low: riscv64
+       
+       Architecture aliases supported:
+       - x86_64: x64, amd64
+       - x86: i386, i686
+       - arm64: aarch64
+       
+       Args:
+           platform: Target platform (linux, windows)
+           arch: Architecture name (auto-detected or user-specified)
+       
+       Returns:
+           Path to rootfs directory for given platform/arch
+       
+       Raises:
+           ValueError: If architecture unsupported
+       """
+       # Normalize architecture names with aliases
+       arch_aliases = {
+           # x86_64 aliases
+           "x86_64": "x8664",
+           "x64": "x8664",
+           "amd64": "x8664",
+           # x86 aliases
+           "x86": "x86",
+           "i386": "x86",
+           "i686": "x86",
+           # ARM64 aliases
+           "arm64": "arm64",
+           "aarch64": "arm64",
+           # ARM aliases
+           "arm": "arm",
+           "armv7": "arm",
+           # MIPS aliases
+           "mips": "mips32",
+           "mips32": "mips32",
+           "mipsel": "mips32el",
+           # RISC-V
+           "riscv64": "riscv64",
+       }
+       
+       normalized_arch = arch_aliases.get(arch.lower(), arch.lower())
+       
+       if platform == "windows":
+           # Windows uses separate rootfs (user-provided DLLs)
+           path_name = f"{normalized_arch}_windows"
+           # Point to user-provided Windows DLLs in data/rootfs/
+           return Path("./data/rootfs") / path_name
+       else:  # linux
+           path_name = f"{normalized_arch}_linux"
+           path = Path(self.rootfs) / path_name
+           
+           # Validate rootfs has required files
+           if not _is_valid_rootfs(path):
+               # Fall back to system rootfs for Linux
+               return Path("/")
+           
+           return path
+   ```
+
+3. **Enhanced `_is_valid_rootfs()` function** (replace lines 127-140):
+   ```python
+   def _is_valid_rootfs(path: Path) -> bool:
+       """Check if the rootfs path contains minimum required files.
+       
+       Validates presence of architecture-specific dynamic linker.
+       
+       Args:
+           path: Path to rootfs directory
+       
+       Returns:
+           True if rootfs is valid, False otherwise
+       """
+       if not path.exists():
+           return False
+       
+       # Architecture-specific dynamic linker paths
+       ld_paths = [
+           # x86_64
+           path / "lib64" / "ld-linux-x86-64.so.2",
+           # x86
+           path / "lib" / "ld-linux.so.2",
+           # ARM64
+           path / "lib64" / "ld-linux-aarch64.so.1",
+           # ARM
+           path / "lib" / "ld-linux-armhf.so.3",
+           # MIPS
+           path / "lib" / "ld.so.1",
+           # RISC-V 64
+           path / "lib64" / "ld-linux-riscv64-lp64d.so.1",
+       ]
+       
+       return any(p.exists() for p in ld_paths)
+   ```
+
+4. **Add Windows DLL validation helper** (add after `_is_valid_rootfs`):
+   ```python
+   def validate_windows_dlls(arch: str) -> tuple[bool, str | None]:
+       """Validate that required Windows DLLs are present.
+       
+       Args:
+           arch: Architecture (x86 or x86_64)
+       
+       Returns:
+           Tuple of (is_valid, error_message)
+           - is_valid: True if DLLs present
+           - error_message: None if valid, helpful message if missing
+       """
+       dll_dir = Path("./data/rootfs") / f"{arch}_windows" / "dlls"
+       
+       if not dll_dir.exists():
+           return False, (
+               f"Windows DLLs not found at {dll_dir}\n"
+               f"Please copy required DLLs from a Windows installation:\n"
+               f"  mkdir -p {dll_dir}\n"
+               f"  cp kernel32.dll ntdll.dll user32.dll advapi32.dll {dll_dir}/\n"
+               f"\n"
+               f"See WINDOWS_DLL_SETUP.md for detailed instructions."
+           )
+       
+       # Check for essential DLLs
+       required_dlls = ["kernel32.dll", "ntdll.dll"]
+       missing = [dll for dll in required_dlls if not (dll_dir / dll).exists()]
+       
+       if missing:
+           return False, (
+               f"Missing required Windows DLLs: {', '.join(missing)}\n"
+               f"Please copy these DLLs to: {dll_dir}\n"
+               f"\n"
+               f"See WINDOWS_DLL_SETUP.md for detailed instructions."
+           )
+       
+       return True, None
+   ```
 
 ---
 
-## Implementation Timeline
+#### 2.2 Update `src/detonate/core/emulator.py`
 
-| Phase | Duration | Start Date | End Date | Status |
-|-------|----------|------------|----------|--------|
-| Phase 1.1 (Windows APIs) | 2 weeks | Week 1 | Week 2 | Pending |
-| Phase 1.2 (Linux Syscalls) | 1 week | Week 3 | Week 3 | Pending |
-| Phase 1.3 (Confidence) | 1 week | Week 4 | Week 4 | Pending |
-| Phase 2.1 (Mitigations) | 1 week | Week 5 | Week 5 | Pending |
-| Phase 2.2 (Data Sources) | 1 week | Week 6 | Week 6 | Pending |
-| Phase 3.1 (Indicators) | 1 week | Week 7 | Week 7 | Pending |
-| Phase 3.2 (Infrastructure) | 1 week | Week 8 | Week 8 | Pending |
-| Phase 3.3 (CVE Lookup) | 1 week | Week 9 | Week 9 | Pending |
-| Phase 4.1 (Attribution) | 2 weeks | Week 10 | Week 11 | Pending |
-| **Total** | **12 weeks** | | | |
+**Changes:**
 
----
+1. **Expand architecture mapping** (lines 164-169):
+   ```python
+   # OLD:
+   arch_map = {
+       "x86": QL_ARCH.X86,
+       "x86_64": QL_ARCH.X8664,
+       "arm": QL_ARCH.ARM,
+       "arm64": QL_ARCH.ARM64,
+   }
+   
+   # NEW:
+   arch_map = {
+       # x86 family
+       "x86": QL_ARCH.X86,
+       "i386": QL_ARCH.X86,
+       "i686": QL_ARCH.X86,
+       "x86_64": QL_ARCH.X8664,
+       "x64": QL_ARCH.X8664,
+       "amd64": QL_ARCH.X8664,
+       # ARM family
+       "arm": QL_ARCH.ARM,
+       "armv7": QL_ARCH.ARM,
+       "arm64": QL_ARCH.ARM64,
+       "aarch64": QL_ARCH.ARM64,
+       # MIPS family
+       "mips": QL_ARCH.MIPS,
+       "mips32": QL_ARCH.MIPS,
+       "mipsel": QL_ARCH.MIPSEL,
+       "mips32el": QL_ARCH.MIPSEL,
+       # RISC-V
+       "riscv64": QL_ARCH.RISCV64,
+   }
+   ```
 
-## Success Metrics
-
-1. **Coverage:** 90%+ of detected techniques have mitigation and data source mappings
-2. **Accuracy:** < 5% false positive rate in attribution (confidence >= 0.5)
-3. **Performance:** < 100ms overhead for enhanced STIX bundle generation
-4. **Completeness:** All 16 STIX object types from ATT&CK represented in output
-
----
-
-## Risks and Mitigations
-
-| Risk | Impact | Likelihood | Mitigation |
-|------|--------|------------|------------|
-| NVD API rate limiting | High | Medium | Implement caching, require API key for production use |
-| Attribution false positives | Medium | Medium | Configurable threshold, clear confidence reporting |
-| STIX bundle size growth | Low | High | Optional compression, streaming output |
-| Mapping accuracy | High | Medium | Extensive unit testing, community review |
-
----
-
-## Appendix A: STIX 2.1 Object Reference
-
-### Core Objects (Already Implemented)
-- `malware` - Analyzed sample
-- `attack-pattern` - Detected techniques
-- `relationship` - Connections between objects
-- `observed-data` - API call evidence
-
-### Phase 2 Objects
-- `course-of-action` - Mitigations (268 objects)
-- `x-mitre-data-source` - Data sources (38 objects)
-- `x-mitre-data-component` - Data components (109 objects)
-
-### Phase 3 Objects
-- `indicator` - Detection patterns
-- `infrastructure` - C2 servers
-- `vulnerability` - CVEs
-
-### Phase 4 Objects
-- `intrusion-set` - Threat actors (187 objects)
-- `campaign` - Campaigns (52 objects)
+2. **Add Windows DLL validation** (add in `_run_emulation()` before Qiling initialization):
+   ```python
+   # Validate Windows DLLs if analyzing Windows binary
+   if self.platform == "windows":
+       from ..config import validate_windows_dlls
+       
+       is_valid, error_msg = validate_windows_dlls(self.architecture)
+       if not is_valid:
+           raise FileNotFoundError(error_msg)
+   ```
 
 ---
 
-## Appendix B: File Changes Summary
+#### 2.3 Update `.gitignore`
 
-### New Files
+**Add to end of file:**
+```gitignore
+# Qiling rootfs submodule (tracked separately)
+data/qiling_rootfs/
+
+# User-provided Windows DLLs (do not commit)
+data/rootfs/*_windows/
+!data/rootfs/.gitkeep
 ```
-src/detonate/mapping/mitigations.py
-src/detonate/mapping/data_sources.py
-src/detonate/mapping/attribution.py
-src/detonate/output/indicators.py
-src/detonate/utils/cve_lookup.py
-tests/test_enhanced_mapping.py
-tests/test_stix_bundle_enhanced.py
-tests/test_performance.py
-```
-
-### Modified Files
-```
-src/detonate/mapping/windows_map.py
-src/detonate/mapping/linux_map.py
-src/detonate/mapping/engine.py
-src/detonate/mapping/stix_data.py
-src/detonate/core/session.py
-src/detonate/core/hooks/windows.py
-src/detonate/core/hooks/linux.py
-src/detonate/output/stix.py
-src/detonate/output/report.py
-src/detonate/db/models.py
-src/detonate/db/store.py
-```
 
 ---
 
-## Appendix C: ENV Variable Configuration
+### Phase 3: Makefile Targets
+
+**Add to `Makefile` after existing targets (before "Web UI development" section):**
+
+```makefile
+# =============================================================================
+# Rootfs Management
+# =============================================================================
+
+# Initialize Qiling rootfs submodule (first-time setup)
+# Uses shallow clone (--depth 1) for fast initialization
+rootfs-init:
+	@echo "========================================"
+	@echo "Initializing Qiling rootfs submodule..."
+	@echo "========================================"
+	@if [ -d "data/qiling_rootfs" ]; then \
+		echo "✓ Rootfs submodule already exists"; \
+		echo "Updating to latest version..."; \
+		git submodule update --remote data/qiling_rootfs; \
+	else \
+		echo "Cloning Qiling rootfs repository (shallow clone)..."; \
+		git submodule add --depth 1 https://github.com/qilingframework/rootfs.git data/qiling_rootfs; \
+	fi
+	@echo ""
+	@echo "Available rootfs architectures:"
+	@ls -1 data/qiling_rootfs/ | grep -E "_(linux|windows)$$" | while read dir; do \
+		echo "  - $$dir"; \
+	done
+	@echo ""
+	@echo "Priority architectures (tested):"
+	@echo "  ✓ x86_64 (x8664_linux)"
+	@echo "  ✓ x86 (x86_linux)"
+	@echo "  ✓ arm64 (arm64_linux)"
+	@echo ""
+	@echo "Extended architectures (community support):"
+	@echo "  - arm (arm_linux)"
+	@echo "  - mips (mips32_linux)"
+	@echo "  - mipsel (mips32el_linux)"
+	@echo "  - riscv64 (riscv64_linux)"
+	@echo ""
+	@echo "========================================"
+	@echo "Rootfs initialization complete!"
+	@echo "========================================"
+
+# Update rootfs submodule to latest version
+rootfs-update:
+	@echo "Updating Qiling rootfs submodule to latest version..."
+	git submodule update --remote data/qiling_rootfs
+	@echo "✓ Rootfs updated successfully"
+	@echo ""
+	@echo "Run 'make rootfs-list' to see available architectures"
+
+# List available rootfs architectures
+rootfs-list:
+	@echo "Available Qiling rootfs architectures:"
+	@echo ""
+	@echo "Linux:"
+	@ls -1 data/qiling_rootfs/ | grep "_linux$$" | while read dir; do \
+		echo "  - $$dir"; \
+	done
+	@echo ""
+	@echo "Windows (user-provided DLLs required):"
+	@echo "  - x86_windows (data/rootfs/x86_windows/dlls/)"
+	@echo "  - x8664_windows (data/rootfs/x8664_windows/dlls/)"
+	@echo ""
+	@echo "See WINDOWS_DLL_SETUP.md for Windows DLL setup instructions"
+
+# Clean rootfs (use with caution - removes submodule)
+rootfs-clean:
+	@echo "WARNING: This will remove the Qiling rootfs submodule!"
+	@echo "You will need to run 'make rootfs-init' to re-download."
+	@echo ""
+	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] && \
+		(rm -rf data/qiling_rootfs && \
+		git submodule deinit -f data/qiling_rootfs 2>/dev/null || true && \
+		echo "✓ Rootfs submodule removed") || \
+		echo "Cancelled"
+
+# Update install target to include rootfs initialization
+install: rootfs-init
+	@echo ""
+	@echo "Installing Python dependencies with uv..."
+	uv sync
+	@echo ""
+	@echo "========================================"
+	@echo "Installation complete!"
+	@echo "========================================"
+	@echo ""
+	@echo "Next steps:"
+	@echo "  1. Build test samples: make samples"
+	@echo "  2. Run end-to-end tests: make test-e2e"
+	@echo "  3. Analyze a sample: detonate analyze <binary>"
+	@echo ""
+	@echo "For Windows binary analysis:"
+	@echo "  - See WINDOWS_DLL_SETUP.md for DLL setup"
+	@echo ""
+```
+
+**Update existing `install` target** (if present) to include `rootfs-init`.
+
+---
+
+### Phase 4: Documentation
+
+#### 4.1 Create `WINDOWS_DLL_SETUP.md` (NEW FILE)
+
+```markdown
+# Windows DLL Setup Guide
+
+## Why Windows DLLs Are Not Included
+
+Windows system DLLs (kernel32.dll, ntdll.dll, etc.) are proprietary Microsoft binaries subject to licensing restrictions. They cannot be redistributed with detonate.
+
+**Users must provide their own Windows DLLs** from a clean Windows installation or test environment.
+
+## ⚠️ Important Security Warnings
+
+1. **Never use DLLs from production systems** - Only use from isolated test VMs
+2. **Ensure compliance with Microsoft licensing** - DLLs are for analysis/testing only
+3. **Keep DLLs isolated** - Do not mix with host system files
+4. **Use clean installations** - Avoid DLLs from compromised systems
+
+## Setup Instructions
+
+### Step 1: Create Directory Structure
 
 ```bash
-# .env.example for development
-DETONATE_GENERATE_INDICATORS=true
-DETONATE_CVE_LOOKUP=false
-DETONATE_NVD_API_KEY=  # Optional, get from https://nvd.nist.gov/developers
-DETONATE_ATTRIBUTION_THRESHOLD=0.5
+# Create Windows DLL directories
+mkdir -p data/rootfs/x86_windows/dlls
+mkdir -p data/rootfs/x8664_windows/dlls
+```
 
-# Database
-DETONATE_DATABASE=/var/lib/detonate/detonate.db
+### Step 2: Obtain DLLs from Windows
 
-# Analysis settings
-DETONATE_ROOTFS=/app/data/rootfs
-DETONATE_DLLS_X86=/opt/rootfs/x86_windows/dlls
-DETONATE_DLLS_X64=/opt/rootfs/x8664_windows/dlls
-DETONATE_OUTPUT_DIR=/output
+**Option A: From Windows VM (Recommended)**
+
+1. Start a clean Windows VM (Windows 10/11 evaluation image)
+2. Copy required DLLs from `C:\Windows\System32\`:
+   ```bash
+   # On Windows VM (PowerShell)
+   $dlls = @("kernel32.dll", "ntdll.dll", "user32.dll", "advapi32.dll", "shell32.dll")
+   Copy-Item C:\Windows\System32\$dlls -Destination \\host\detonate\data\rootfs\x8664_windows\dlls\
+   ```
+
+**Option B: From Windows Installation Media**
+
+1. Mount Windows ISO
+2. Extract `install.wim` or `install.esd`
+3. Use 7-zip or wimlib to extract DLLs from `Windows\System32\`
+
+**Option C: From Qiling Windows Rootfs**
+
+Qiling provides some Windows rootfs files. Check:
+```bash
+# If using Qiling Windows rootfs
+ls /path/to/qiling/rootfs/x8664_windows/
+```
+
+### Step 3: Required DLLs (x86_64)
+
+Minimum required DLLs for basic analysis:
+
+| DLL | Purpose | Required |
+|-----|---------|----------|
+| `kernel32.dll` | Core Windows API | ✅ Yes |
+| `ntdll.dll` | Native API | ✅ Yes |
+| `user32.dll` | User interface | ⚠️ For GUI malware |
+| `advapi32.dll` | Registry, services | ⚠️ For persistence malware |
+| `shell32.dll` | Shell operations | ⚠️ For file operations |
+| `ws2_32.dll` | Networking | ⚠️ For network malware |
+| `msvcrt.dll` | C runtime | ⚠️ For MSVC-compiled binaries |
+
+**Recommended:** Start with kernel32.dll and ntdll.dll, add others as needed.
+
+### Step 4: Verify Setup
+
+```bash
+# List DLLs
+ls -lh data/rootfs/x8664_windows/dlls/
+
+# Expected output:
+# -rw-r--r-- 1 user user 1.5M kernel32.dll
+# -rw-r--r-- 1 user user 2.1M ntdll.dll
+# ...
+
+# Test with detonate
+detonate analyze malware.exe --platform windows --arch x86_64 --dlls data/rootfs/x8664_windows/dlls
+```
+
+## Architecture-Specific DLLs
+
+### x86_64 (64-bit Windows)
+- Source: `C:\Windows\System32\`
+- Destination: `data/rootfs/x8664_windows/dlls/`
+
+### x86 (32-bit Windows)
+- Source (64-bit Windows): `C:\Windows\SysWOW64\`
+- Source (32-bit Windows): `C:\Windows\System32\`
+- Destination: `data/rootfs/x86_windows/dlls/`
+
+## Troubleshooting
+
+### Error: "Missing required Windows DLLs"
+
+**Solution:**
+```bash
+# Verify DLLs exist
+ls data/rootfs/x8664_windows/dlls/kernel32.dll
+
+# Re-copy from Windows VM
+# (See Step 2 above)
+```
+
+### Error: "DLL load failed"
+
+**Possible causes:**
+- DLL architecture mismatch (x86 vs x86_64)
+- Missing dependent DLLs
+- Corrupted DLL files
+
+**Solution:**
+1. Verify architecture matches sample binary
+2. Copy additional DLLs (dependencies)
+3. Use clean DLLs from fresh Windows installation
+
+### Analysis Fails Immediately
+
+**Check:**
+```bash
+# Verify DLLs are readable
+file data/rootfs/x8664_windows/dlls/*.dll
+
+# Check permissions
+chmod 644 data/rootfs/x8664_windows/dlls/*.dll
+```
+
+## Legal Considerations
+
+- DLLs are for **analysis and testing only**
+- Do not distribute DLLs
+- Do not use DLLs in production environments
+- Comply with Microsoft's licensing terms
+- Delete DLLs when no longer needed
+
+## References
+
+- [Qiling Windows Emulation](https://docs.qiling.io/en/latest/)
+- [Windows 10 Evaluation VMs](https://developer.microsoft.com/en-us/windows/downloads/virtual-machines/)
+- [Wimlib for Extracting install.wim](https://wimlib.net/)
+
+---
+
+**Need help?** Open an issue with:
+- Windows version used
+- Architecture (x86/x86_64)
+- Error message from detonate
 ```
 
 ---
 
-**Document End**
+#### 4.2 Update `README.md`
+
+**Add after "Installation" section:**
+
+```markdown
+## Rootfs Setup
+
+Detonate uses Qiling's official rootfs repository for Linux emulation. The rootfs is managed as a git submodule.
+
+### First-Time Setup
+
+```bash
+# Option 1: Clone with submodules (recommended)
+git clone --recursive https://github.com/xen0bit/detonate.git
+cd detonate
+
+# Option 2: Initialize submodules after cloning
+git clone https://github.com/xen0bit/detonate.git
+cd detonate
+make rootfs-init
+```
+
+### Manual Rootfs Commands
+
+```bash
+# Initialize rootfs submodule
+make rootfs-init
+
+# Update to latest rootfs version
+make rootfs-update
+
+# List available architectures
+make rootfs-list
+
+# Remove rootfs (frees ~200MB)
+make rootfs-clean
+```
+
+### Supported Architectures
+
+| Priority | Platform | Architectures | Rootfs Directory | Status |
+|----------|----------|--------------|------------------|--------|
+| **High** | Linux | x86_64, x86, arm64 | `data/qiling_rootfs/<arch>_linux` | ✅ Tested |
+| **Medium** | Linux | arm, mips, mipsel | `data/qiling_rootfs/<arch>_linux` | ⚠️ Community support |
+| **Low** | Linux | riscv64 | `data/qiling_rootfs/riscv64_linux` | 🧪 Experimental |
+| **User-provided** | Windows | x86, x86_64 | `data/rootfs/<arch>_windows/dlls` | 📝 See below |
+
+### Architecture Aliases
+
+Detonate automatically recognizes architecture aliases:
+
+| Canonical | Aliases |
+|-----------|---------|
+| `x86_64` | `x64`, `amd64` |
+| `x86` | `i386`, `i686` |
+| `arm64` | `aarch64` |
+| `arm` | `armv7` |
+| `mips` | `mips32` |
+| `mipsel` | `mips32el` |
+
+### Windows DLL Setup
+
+Windows rootfs is **not included** due to licensing restrictions. Users must provide their own Windows DLLs.
+
+**Quick setup:**
+```bash
+# Create directories
+mkdir -p data/rootfs/x86_windows/dlls
+mkdir -p data/rootfs/x8664_windows/dlls
+
+# Copy DLLs from Windows VM (see WINDOWS_DLL_SETUP.md)
+# Required: kernel32.dll, ntdll.dll
+```
+
+📖 **See [WINDOWS_DLL_SETUP.md](WINDOWS_DLL_SETUP.md) for complete instructions.**
+
+### Troubleshooting
+
+**Rootfs not found errors:**
+```bash
+# Verify submodule is initialized
+git submodule status
+
+# Re-initialize if needed
+make rootfs-init
+```
+
+**Architecture not supported:**
+```bash
+# Check available rootfs
+make rootfs-list
+
+# Verify rootfs has required files
+ls data/qiling_rootfs/x8664_linux/lib64/ld-linux-x86-64.so.2
+```
+
+**Windows DLL errors:**
+```bash
+# Check if DLLs exist
+ls data/rootfs/x8664_windows/dlls/
+
+# See detailed setup guide
+cat WINDOWS_DLL_SETUP.md
+```
+
+**Go binaries fail to emulate:**
+- Ensure rootfs is properly initialized: `make rootfs-init`
+- Check for Go runtime errors in logs
+- Try C sample (`trigger_syscalls_c`) as alternative
+- Report specific error messages for troubleshooting
+```
+
+**Update "Usage" section** to mention architecture aliases:
+```markdown
+# Analyze with architecture alias
+detonate analyze sample --arch amd64  # Same as x86_64
+detonate analyze sample --arch aarch64  # Same as arm64
+```
+
+---
+
+#### 4.3 Update `examples/samples/README.md`
+
+**Update "Go Sample" section:**
+
+```markdown
+## Go Sample: trigger_syscalls_go
+
+### Overview
+
+Statically-linked Go binary that safely triggers syscalls mapped to ATT&CK techniques. Uses CGO for the ptrace syscall.
+
+### ⚠️ Qiling Emulation Limitations
+
+**Important:** Go binaries have complex runtime initialization (goroutines, garbage collector, network stack) that may exceed Qiling's userspace emulation capabilities, even with the official rootfs.
+
+**With the new Qiling rootfs:**
+- ✅ Proper system libraries available (libc, ld-linux)
+- ✅ Better syscall emulation
+- ⚠️ Go runtime may still cause emulation failures
+
+**For reliable detonate testing, use the C `trigger_syscalls_c` sample instead.**
+
+### Build Commands
+
+```bash
+# Native x86_64 build (statically linked)
+GO111MODULE=off CGO_ENABLED=1 go build -ldflags="-extldflags '-static'" -o trigger_syscalls_go trigger_syscalls.go
+
+# ARM64 cross-compile (requires aarch64-linux-gnu-gcc)
+GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 \
+    go build -ldflags="-extldflags '-static'" -o trigger_syscalls_go_arm64 trigger_syscalls.go
+```
+
+### Testing with New Rootfs
+
+```bash
+# Initialize rootfs first
+make rootfs-init
+
+# Analyze Go sample
+detonate analyze trigger_syscalls_go \
+    --platform linux \
+    --arch x86_64 \
+    --format all \
+    --output ./results
+
+# Check results
+# Expected: Improved emulation over previous attempts
+# May still hit Go runtime initialization issues
+```
+
+### Expected Behavior
+
+**With minimal rootfs (old):**
+- ❌ Immediate failure (missing libraries)
+
+**With Qiling official rootfs (new):**
+- ⚠️ May progress further into Go runtime initialization
+- ⚠️ May still fail at goroutine scheduler setup
+- ✅ Better error messages for debugging
+
+**Recommended workflow:**
+1. Try Go sample with new rootfs
+2. If emulation fails, check logs for specific error
+3. Use C sample (`trigger_syscalls_c`) for reliable testing
+4. Report Go-specific errors for Qiling improvement
+```
+
+---
+
+### Phase 5: Build Script Updates
+
+#### 5.1 Update `examples/samples/build_all.sh`
+
+**Add ARM64 build with auto-detection (after trigger_x86_64 build):**
+
+```bash
+# Build trigger_syscalls_c (C comprehensive syscall trigger)
+echo "[4/8] Building trigger_syscalls_c (C x86_64)..."
+gcc -static -o trigger_syscalls_c trigger_syscalls.c
+echo "      -> trigger_syscalls_c ($(stat -c%s trigger_syscalls_c) bytes)"
+
+# Build trigger_syscalls_c_arm64 (C ARM64 cross-compile)
+echo "[5/8] Building trigger_syscalls_c_arm64 (C ARM64)..."
+if command -v aarch64-linux-gnu-gcc &> /dev/null; then
+    aarch64-linux-gnu-gcc -static -o trigger_syscalls_c_arm64 trigger_syscalls.c
+    echo "      -> trigger_syscalls_c_arm64 ($(stat -c%s trigger_syscalls_c_arm64) bytes)"
+else
+    echo "      -> SKIPPED (install aarch64-linux-gnu-gcc for ARM64 support)"
+fi
+
+# Build fake_pe_x86.exe (minimal PE header)
+echo "[6/8] Building fake_pe_x86.exe..."
+# ... (existing code)
+
+# Build Go samples (if prerequisites available)
+if check_go_prerequisites; then
+    # Build trigger_syscalls_go (Go x86_64)
+    echo "[7/8] Building trigger_syscalls_go (Go x86_64)..."
+    cd "${SCRIPT_DIR}"
+    GO111MODULE=off CGO_ENABLED=1 go build -ldflags="-extldflags '-static'" -o trigger_syscalls_go trigger_syscalls.go 2>&1 | grep -v "warning:" || true
+    if [ -f trigger_syscalls_go ]; then
+        echo "      -> trigger_syscalls_go ($(stat -c%s trigger_syscalls_go) bytes)"
+    else
+        echo "      -> WARNING: Go build failed"
+    fi
+    
+    # Build trigger_syscalls_go_arm64 (Go ARM64 cross-compile)
+    echo "[8/8] Building trigger_syscalls_go_arm64 (Go ARM64)..."
+    if command -v aarch64-linux-gnu-gcc &> /dev/null; then
+        GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 \
+            go build -ldflags="-extldflags '-static'" -o trigger_syscalls_go_arm64 trigger_syscalls.go 2>&1 | grep -v "warning:" || true
+        if [ -f trigger_syscalls_go_arm64 ]; then
+            echo "      -> trigger_syscalls_go_arm64 ($(stat -c%s trigger_syscalls_go_arm64) bytes)"
+        else
+            echo "      -> WARNING: ARM64 Go build failed"
+        fi
+    else
+        echo "      -> SKIPPED (aarch64-linux-gnu-gcc not available)"
+    fi
+else
+    echo "[7/8] Skipping Go builds (missing prerequisites)"
+    echo "[8/8] Skipping Go ARM64 builds"
+fi
+```
+
+---
+
+## User Flows
+
+### Flow 1: First-Time User Setup
+
+**User Story:** "As a new user, I want to quickly set up detonate so I can start analyzing binaries."
+
+**Steps:**
+1. Clone repository
+   ```bash
+   git clone --recursive https://github.com/xen0bit/detonate.git
+   cd detonate
+   ```
+
+2. Install dependencies
+   ```bash
+   make install
+   ```
+   **Expected output:**
+   ```
+   ========================================
+   Initializing Qiling rootfs submodule...
+   ========================================
+   Cloning Qiling rootfs repository (shallow clone)...
+   
+   Available rootfs architectures:
+     - x8664_linux
+     - x86_linux
+     - arm64_linux
+     - arm_linux
+     - mips32_linux
+     - mips32el_linux
+     - riscv64_linux
+   
+   Priority architectures (tested):
+     ✓ x86_64 (x8664_linux)
+     ✓ x86 (x86_linux)
+     ✓ arm64 (arm64_linux)
+   
+   ========================================
+   Rootfs initialization complete!
+   ========================================
+   
+   Installing Python dependencies with uv...
+   ...
+   Installation complete!
+   ```
+
+3. Build test samples
+   ```bash
+   make samples
+   ```
+
+4. Run end-to-end tests
+   ```bash
+   make test-e2e
+   ```
+
+**Validation:**
+- ✅ Rootfs submodule initialized
+- ✅ All priority architectures available (x86_64, x86, arm64)
+- ✅ Test samples built successfully
+- ✅ E2E tests pass
+
+---
+
+### Flow 2: Analyze Linux Binary (x86_64)
+
+**User Story:** "As a security analyst, I want to analyze a suspicious Linux ELF binary so I can understand its behavior."
+
+**Steps:**
+1. Ensure rootfs is initialized
+   ```bash
+   make rootfs-init
+   ```
+
+2. Analyze binary
+   ```bash
+   detonate analyze suspicious_binary \
+       --platform linux \
+       --arch x86_64 \
+       --format all \
+       --output ./analysis_results
+   ```
+
+3. Review outputs
+   ```bash
+   ls ./analysis_results/
+   # - navigator_*.json (ATT&CK Navigator layer)
+   # - stix_*.json (STIX 2.1 bundle)
+   # - report_*.md (Markdown report)
+   # - log_*.jsonl (Structured event log)
+   ```
+
+**Validation:**
+- ✅ Analysis completes without rootfs errors
+- ✅ All 4 output formats generated
+- ✅ ATT&CK techniques detected
+- ✅ No "missing rootfs" errors
+
+---
+
+### Flow 3: Analyze ARM64 Binary
+
+**User Story:** "As an IoT security researcher, I want to analyze ARM64 malware so I can understand threats to embedded devices."
+
+**Steps:**
+1. Verify ARM64 rootfs available
+   ```bash
+   make rootfs-list
+   # Should show: arm64_linux
+   ```
+
+2. Build ARM64 test sample (optional)
+   ```bash
+   cd examples/samples
+   aarch64-linux-gnu-gcc -static -o trigger_syscalls_c_arm64 trigger_syscalls.c
+   ```
+
+3. Analyze ARM64 binary
+   ```bash
+   detonate analyze arm64_malware \
+       --platform linux \
+       --arch arm64 \
+       --format all \
+       --output ./arm64_analysis
+   ```
+
+**Validation:**
+- ✅ ARM64 rootfs recognized
+- ✅ Analysis completes without architecture errors
+- ✅ Syscalls properly intercepted
+- ✅ ATT&CK techniques detected
+
+---
+
+### Flow 4: Analyze Windows Binary
+
+**User Story:** "As a malware analyst, I want to analyze Windows PE malware so I can extract IOCs and ATT&CK mappings."
+
+**Steps:**
+1. Set up Windows DLLs
+   ```bash
+   mkdir -p data/rootfs/x8664_windows/dlls
+   # Copy DLLs from Windows VM (see WINDOWS_DLL_SETUP.md)
+   cp kernel32.dll ntdll.dll data/rootfs/x8664_windows/dlls/
+   ```
+
+2. Verify DLLs
+   ```bash
+   ls -lh data/rootfs/x8664_windows/dlls/
+   ```
+
+3. Analyze Windows binary
+   ```bash
+   detonate analyze malware.exe \
+       --platform windows \
+       --arch x86_64 \
+       --dlls data/rootfs/x8664_windows/dlls \
+       --format all \
+       --output ./windows_analysis
+   ```
+
+**Error Handling:**
+If DLLs missing:
+```
+Error: Missing required Windows DLLs: kernel32.dll, ntdll.dll
+Please copy these DLLs to: data/rootfs/x8664_windows/dlls
+
+See WINDOWS_DLL_SETUP.md for detailed instructions.
+```
+
+**Validation:**
+- ✅ Helpful error message if DLLs missing
+- ✅ Analysis proceeds if DLLs present
+- ✅ Windows APIs properly intercepted
+- ✅ ATT&CK techniques detected
+
+---
+
+### Flow 5: Analyze Go Binary
+
+**User Story:** "As a researcher, I want to test if detonate can analyze statically-compiled Go binaries."
+
+**Steps:**
+1. Build Go sample
+   ```bash
+   cd examples/samples
+   GO111MODULE=off CGO_ENABLED=1 go build -ldflags="-extldflags '-static'" -o trigger_syscalls_go trigger_syscalls.go
+   ```
+
+2. Verify rootfs initialized
+   ```bash
+   make rootfs-init
+   ```
+
+3. Analyze Go binary
+   ```bash
+   detonate analyze trigger_syscalls_go \
+       --platform linux \
+       --arch x86_64 \
+       --format all \
+       --output ./go_analysis
+   ```
+
+4. Check results
+   ```bash
+   cat ./go_analysis/log_*.jsonl | grep technique_id
+   ```
+
+**Expected Outcomes:**
+
+**Best case:**
+```
+✓ Analysis completes
+✓ Multiple techniques detected (mmap, socket, open, etc.)
+✓ ATT&CK mapping successful
+```
+
+**Likely case (Go runtime issues):**
+```
+⚠️ Emulation progresses further than before
+⚠️ May fail at Go runtime initialization (goroutines, GC)
+✓ Better error messages for debugging
+```
+
+**Fallback:**
+```
+If Go analysis fails, use C sample:
+detonate analyze trigger_syscalls_c --arch x86_64
+```
+
+**Validation:**
+- ✅ Rootfs properly loaded (no "missing library" errors)
+- ⚠️ Go runtime may still cause issues (documented limitation)
+- ✅ Clear error messages if emulation fails
+- ✅ C sample works as reliable alternative
+
+---
+
+### Flow 6: Update Rootfs
+
+**User Story:** "As a power user, I want to update to the latest Qiling rootfs so I can benefit from improvements."
+
+**Steps:**
+1. Update submodule
+   ```bash
+   make rootfs-update
+   ```
+   **Expected output:**
+   ```
+   Updating Qiling rootfs submodule to latest version...
+   ✓ Rootfs updated successfully
+   ```
+
+2. Verify update
+   ```bash
+   cd data/qiling_rootfs
+   git log --oneline -1
+   ```
+
+3. Test with sample
+   ```bash
+   detonate analyze trigger_syscalls_c --arch x86_64
+   ```
+
+**Validation:**
+- ✅ Submodule updates to latest commit
+- ✅ Analysis still works after update
+- ✅ No breaking changes
+
+---
+
+## Testing & Validation
+
+### Test Matrix
+
+| Test ID | Architecture | Sample Binary | Expected Techniques | Priority | Status |
+|---------|-------------|---------------|---------------------|----------|--------|
+| T001 | x86_64 | `trigger_syscalls_c` | 10+ | P0 | ⏳ Pending |
+| T002 | x86 | `minimal_x86` | 1-2 | P0 | ⏳ Pending |
+| T003 | arm64 | `trigger_syscalls_c_arm64` | 10+ | P0 | ⏳ Pending |
+| T004 | x86_64 | `trigger_syscalls_go` | 2-10 (may fail) | P1 | ⏳ Pending |
+| T005 | arm | TBD | TBD | P1 | ⏳ Future |
+| T006 | mips | TBD | TBD | P1 | ⏳ Future |
+
+### Validation Commands
+
+```bash
+# Test x86_64
+detonate analyze examples/samples/trigger_syscalls_c \
+    --platform linux --arch x86_64 \
+    --output /tmp/test_x8664
+
+# Verify output files
+ls /tmp/test_x8664/*.json /tmp/test_x8664/*.md /tmp/test_x8664/*.jsonl
+
+# Check techniques detected
+grep -o '"technique_id":"T[0-9.]*"' /tmp/test_x8664/log_*.jsonl | sort -u | wc -l
+# Expected: ≥10
+
+# Test x86
+detonate analyze examples/samples/minimal_x86 \
+    --platform linux --arch x86 \
+    --output /tmp/test_x86
+
+# Test arm64
+detonate analyze examples/samples/trigger_syscalls_c_arm64 \
+    --platform linux --arch arm64 \
+    --output /tmp/test_arm64
+
+# Test Go (expect improvements over previous attempts)
+detonate analyze examples/samples/trigger_syscalls_go \
+    --platform linux --arch x86_64 \
+    --output /tmp/test_go
+```
+
+### Success Criteria
+
+| Criterion | Before | After | Status |
+|-----------|--------|-------|--------|
+| Rootfs initialization | Manual | `make rootfs-init` | ⏳ Pending |
+| x86_64 analysis | Works | Works better | ⏳ Pending |
+| x86 analysis | Works | Works | ⏳ Pending |
+| arm64 analysis | Not available | Works | ⏳ Pending |
+| Go binary analysis | Fails | Improved (may still fail) | ⏳ Pending |
+| Windows DLL errors | Confusing | Clear message + docs | ⏳ Pending |
+| Architecture aliases | Not supported | Supported | ⏳ Pending |
+
+---
+
+## Acceptance Criteria
+
+### Phase 1: Git Submodule
+- [ ] Submodule added with `--depth 1`
+- [ ] `.gitmodules` file committed
+- [ ] Submodule status shows correct path
+- [ ] Rootfs directories accessible
+
+### Phase 2: Configuration
+- [ ] `config.py` default rootfs path updated
+- [ ] Architecture aliases working (x64→x8664, aarch64→arm64, etc.)
+- [ ] `_is_valid_rootfs()` checks all architecture linkers
+- [ ] Windows DLL validation with helpful error messages
+- [ ] `emulator.py` arch_map expanded
+
+### Phase 3: Makefile
+- [ ] `rootfs-init` target works (first-time setup)
+- [ ] `rootfs-update` target works (updates submodule)
+- [ ] `rootfs-list` target shows architectures
+- [ ] `install` target includes `rootfs-init`
+- [ ] All targets documented
+
+### Phase 4: Documentation
+- [ ] `WINDOWS_DLL_SETUP.md` created with complete instructions
+- [ ] `README.md` updated with rootfs setup section
+- [ ] Architecture support table added
+- [ ] Troubleshooting section added
+- [ ] `.gitignore` updated for submodule and Windows DLLs
+
+### Phase 5: Build Scripts
+- [ ] `build_all.sh` includes ARM64 build
+- [ ] Auto-detection for cross-compilers
+- [ ] Helpful skip messages when compilers unavailable
+- [ ] Step numbering updated (8 total steps)
+
+### Phase 6: Testing
+- [ ] x86_64 analysis works with new rootfs
+- [ ] x86 analysis works with new rootfs
+- [ ] arm64 analysis works with new rootfs
+- [ ] Go sample tested (document results)
+- [ ] All priority architectures validated
+
+---
+
+## Troubleshooting Guide
+
+### Common Issues
+
+#### Issue 1: "Rootfs not found" Error
+
+**Symptoms:**
+```
+Error: Rootfs not found: ./data/qiling_rootfs/x8664_linux
+```
+
+**Cause:** Submodule not initialized.
+
+**Solution:**
+```bash
+make rootfs-init
+```
+
+---
+
+#### Issue 2: "Missing required Windows DLLs" Error
+
+**Symptoms:**
+```
+Error: Missing required Windows DLLs: kernel32.dll, ntdll.dll
+```
+
+**Cause:** Windows DLLs not provided.
+
+**Solution:**
+```bash
+# See detailed instructions
+cat WINDOWS_DLL_SETUP.md
+
+# Quick fix
+mkdir -p data/rootfs/x8664_windows/dlls
+# Copy DLLs from Windows VM
+```
+
+---
+
+#### Issue 3: Architecture Not Recognized
+
+**Symptoms:**
+```
+Error: Unsupported architecture: amd64
+```
+
+**Cause:** Using alias not in mapping.
+
+**Solution:**
+- Use canonical name: `x86_64` instead of `amd64`
+- Or ensure alias is in `arch_aliases` dict in `config.py`
+
+---
+
+#### Issue 4: Go Binary Emulation Fails
+
+**Symptoms:**
+```
+Error: Invalid memory write (UC_ERR_WRITE_UNMAPPED)
+```
+
+**Cause:** Go runtime complexity exceeds Qiling capabilities.
+
+**Solution:**
+1. Verify rootfs initialized: `make rootfs-init`
+2. Check logs for specific error point
+3. Use C sample as alternative: `trigger_syscalls_c`
+4. Report error for Qiling improvement
+
+---
+
+#### Issue 5: ARM64 Build Fails
+
+**Symptoms:**
+```
+aarch64-linux-gnu-gcc: command not found
+```
+
+**Cause:** Cross-compiler not installed.
+
+**Solution:**
+```bash
+# Install cross-compiler
+sudo apt install -y gcc-aarch64-linux-gnu
+
+# Or skip ARM64, use x86_64 sample
+```
+
+---
+
+#### Issue 6: Submodule Clone Fails
+
+**Symptoms:**
+```
+fatal: could not read Username for 'https://github.com': terminal prompts disabled
+```
+
+**Cause:** Network issue or authentication required.
+
+**Solution:**
+```bash
+# Check network connectivity
+ping github.com
+
+# Try manual clone
+cd data
+git clone --depth 1 https://github.com/qilingframework/rootfs.git qiling_rootfs
+```
+
+---
+
+## Rollback Plan
+
+If issues arise, rollback steps:
+
+```bash
+# Remove submodule
+git submodule deinit -f data/qiling_rootfs
+rm -rf data/qiling_rootfs
+
+# Remove .gitmodules
+git rm .gitmodules
+
+# Revert config changes
+git checkout src/detonate/config.py
+git checkout src/detonate/core/emulator.py
+
+# Restore old rootfs (if backed up)
+# Or recreate minimal rootfs
+mkdir -p data/rootfs/x8664_linux/tmp
+```
+
+---
+
+## Future Enhancements
+
+1. **Automated rootfs testing** - Test all architectures in CI/CD
+2. **Windows rootfs automation** - Script DLL extraction from Windows ISO
+3. **Rootfs caching** - Cache rootfs in CI to speed up builds
+4. **Architecture detection** - Auto-detect binary architecture from ELF/PE headers
+5. **Custom rootfs support** - Allow users to provide custom rootfs paths
+
+---
+
+## References
+
+- [Qiling Rootfs Repository](https://github.com/qilingframework/rootfs)
+- [Qiling Documentation](https://docs.qiling.io/en/latest/)
+- [Unicorn Engine](https://www.unicorn-engine.org/)
+- [MITRE ATT&CK](https://attack.mitre.org/)
+
+---
+
+**Document Version:** 1.0  
+**Last Updated:** 2026-04-23  
+**Author:** detonate development team  
+**Status:** Implementation Plan
