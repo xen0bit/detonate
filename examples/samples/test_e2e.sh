@@ -308,6 +308,163 @@ else
 fi
 
 # =============================================================================
+# Test 11: C Sample Analysis (trigger_syscalls_c)
+# =============================================================================
+test_c_syscalls() {
+    log_info "=== Test 11: Testing C sample (trigger_syscalls_c) ==="
+    
+    C_OUTPUT_DIR="${TEST_OUTPUT_DIR}/c_analysis"
+    mkdir -p "${C_OUTPUT_DIR}"
+    
+    # Verify C sample exists
+    if [ ! -f "${SCRIPT_DIR}/trigger_syscalls_c" ]; then
+        log_info "Building C sample..."
+        cd "${SCRIPT_DIR}"
+        if ! gcc -static -o trigger_syscalls_c trigger_syscalls.c 2>&1; then
+            log_fail "C sample build failed"
+            return 1
+        fi
+        log_pass "C sample built successfully"
+    fi
+    
+    # Verify static linking
+    if ldd trigger_syscalls_c 2>&1 | grep -q "not a dynamic executable"; then
+        log_pass "C sample is statically linked"
+    else
+        log_fail "C sample has dynamic dependencies"
+    fi
+    
+    # Analyze with detonate
+    log_info "Analyzing C sample with detonate..."
+    cd "${SCRIPT_DIR}"
+    if ! python3 -m detonate.cli analyze trigger_syscalls_c \
+        --platform linux \
+        --arch x86_64 \
+        --output "${C_OUTPUT_DIR}" \
+        2>&1 | grep -q "Analysis complete\|analysis_completed"; then
+        log_fail "C sample analysis failed"
+        return 1
+    fi
+    log_pass "C sample analysis completed"
+    
+    # Find log file
+    LOG_FILE=$(ls "${C_OUTPUT_DIR}"/log_*.jsonl 2>/dev/null | head -1)
+    if [ -z "$LOG_FILE" ]; then
+        log_fail "C analysis log file not created"
+        return 1
+    fi
+    
+    # Count unique techniques
+    TECH_COUNT=$(grep -o '"technique_id":"T[0-9.]*"' "$LOG_FILE" | sort -u | wc -l)
+    log_info "Unique techniques detected: ${TECH_COUNT}"
+    
+    # Verify exact count (expect 10+ techniques for C sample)
+    if [ "$TECH_COUNT" -ge 10 ]; then
+        log_pass "Technique count meets expectation (≥10): ${TECH_COUNT}"
+    else
+        log_fail "Technique count below expectation (≥10): ${TECH_COUNT}"
+    fi
+    
+    # Verify key high-confidence techniques
+    log_info "Verifying key technique detections..."
+    
+    # T1003.008 - Credential Access
+    if grep -q '"technique_id":"T1003.008"' "$LOG_FILE"; then
+        log_pass "T1003.008 (Credential Access) detected"
+    else
+        log_fail "T1003.008 (Credential Access) NOT detected"
+    fi
+    
+    # T1548.001 - Setuid/Setgid
+    if grep -q '"technique_id":"T1548.001"' "$LOG_FILE"; then
+        log_pass "T1548.001 (Setuid/Setgid) detected"
+    else
+        log_fail "T1548.001 (Setuid/Setgid) NOT detected"
+    fi
+    
+    # T1055 - Process Injection (mmap/mprotect)
+    if grep -q '"technique_id":"T1055"' "$LOG_FILE"; then
+        log_pass "T1055 (Process Injection) detected"
+    else
+        log_fail "T1055 (Process Injection) NOT detected"
+    fi
+    
+    # T1071 - Application Layer Protocol
+    if grep -q '"technique_id":"T1071"' "$LOG_FILE"; then
+        log_pass "T1071 (Application Layer Protocol) detected"
+    else
+        log_fail "T1071 (Application Layer Protocol) NOT detected"
+    fi
+    
+    # T1070.004 - File Deletion
+    if grep -q '"technique_id":"T1070.004"' "$LOG_FILE"; then
+        log_pass "T1070.004 (File Deletion) detected"
+    else
+        log_fail "T1070.004 (File Deletion) NOT detected"
+    fi
+    
+    # T1082 - System Information Discovery
+    if grep -q '"technique_id":"T1082"' "$LOG_FILE"; then
+        log_pass "T1082 (System Information Discovery) detected"
+    else
+        log_fail "T1082 (System Information Discovery) NOT detected"
+    fi
+    
+    # T1083 - File and Directory Discovery
+    if grep -q '"technique_id":"T1083"' "$LOG_FILE"; then
+        log_pass "T1083 (File and Directory Discovery) detected"
+    else
+        log_fail "T1083 (File and Directory Discovery) NOT detected"
+    fi
+    
+    # T1053.003 - Cron (persistence)
+    if grep -q '"technique_id":"T1053.003"' "$LOG_FILE"; then
+        log_pass "T1053.003 (Cron) detected"
+    else
+        log_fail "T1053.003 (Cron) NOT detected"
+    fi
+    
+    # T1543.002 - Systemd Service (persistence)
+    if grep -q '"technique_id":"T1543.002"' "$LOG_FILE"; then
+        log_pass "T1543.002 (Systemd Service) detected"
+    else
+        log_fail "T1543.002 (Systemd Service) NOT detected"
+    fi
+    
+    # T1611 - Escape to Host
+    if grep -q '"technique_id":"T1611"' "$LOG_FILE"; then
+        log_pass "T1611 (Escape to Host) detected"
+    else
+        log_fail "T1611 (Escape to Host) NOT detected"
+    fi
+    
+    # T1005 - Data from Local System
+    if grep -q '"technique_id":"T1005"' "$LOG_FILE"; then
+        log_pass "T1005 (Data from Local System) detected"
+    else
+        log_fail "T1005 (Data from Local System) NOT detected"
+    fi
+    
+    # Verify output files
+    if ls "${C_OUTPUT_DIR}"/navigator_*.json 1>/dev/null 2>&1; then
+        log_pass "C Navigator layer created"
+    else
+        log_fail "C Navigator layer missing"
+    fi
+    
+    if ls "${C_OUTPUT_DIR}"/report_*.md 1>/dev/null 2>&1; then
+        log_pass "C Markdown report created"
+    else
+        log_fail "C Markdown report missing"
+    fi
+    
+    log_info "=== C sample tests complete ==="
+}
+
+# Run C sample test
+test_c_syscalls
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo ""

@@ -1,7 +1,7 @@
 # Detonate Makefile
 # Common workflows for development, testing, and deployment
 
-.PHONY: help install dev clean test test-cov lint typecheck build docker-build docker-run analyze samples samples-clean docker-test web-dev web-download-deps web-lint web-build test-web
+.PHONY: help install dev clean test test-cov lint typecheck build docker-build docker-run analyze samples samples-clean samples-go samples-go-cross samples-cross docker-test web-dev web-download-deps web-lint web-build test-web
 
 # Default target
 help:
@@ -92,15 +92,61 @@ format:
 # Run all checks
 check: lint typecheck test
 
-# Build test samples from source
+# Build test samples from source (C + Go)
 samples:
 	cd examples/samples && ./build_all.sh
+	@echo ""
+	@echo "All samples built (C + Go)"
+	@echo ""
+	@echo "C samples:"
+	@echo "  - trigger_syscalls_c (x86_64, comprehensive syscall coverage)"
+	@echo "  - trigger_syscalls_c_arm64 (ARM64 cross-compile)"
+	@echo "  - trigger_x86_64 (x86_64, basic syscall coverage)"
+	@echo ""
+	@echo "Go samples:"
+	@echo "  - trigger_syscalls_go (x86_64, may not fully emulate in Qiling)"
+	@echo "  - trigger_syscalls_go_arm64 (ARM64 cross-compile)"
 
 # Remove compiled sample binaries
 samples-clean:
-	cd examples/samples && rm -f minimal_x86 minimal_x86_64 trigger_x8664 trigger_x86_64 fake_pe_x86.exe
+	cd examples/samples && rm -f minimal_x86 minimal_x86_64 trigger_x8664 trigger_x86_64 fake_pe_x86.exe trigger_syscalls trigger_syscalls_arm64
 	rm -rf examples/samples/data/*.json examples/samples/data/*.md
 	@echo "Sample binaries cleaned"
+
+# Build Go samples (x86_64 native)
+# Note: Go runtime initialization is complex and may not fully emulate in Qiling.
+# For best results with detonate, use the C trigger_x86_64 sample.
+samples-go:
+	@echo "Building Go samples (x86_64)..."
+	cd examples/samples && GO111MODULE=off CGO_ENABLED=1 go build -ldflags="-extldflags '-static'" -o trigger_syscalls trigger_syscalls.go 2>&1 | grep -v "warning:" || true
+	@echo "Go x86_64 sample built: examples/samples/trigger_syscalls"
+	@echo ""
+	@echo "Verifying static linking..."
+	@if ldd examples/samples/trigger_syscalls 2>&1 | grep -q "not a dynamic executable"; then \
+		echo "✓ trigger_syscalls is statically linked"; \
+	else \
+		echo "WARNING: trigger_syscalls may have dynamic dependencies"; \
+	fi
+
+# Build Go samples with cross-compilation (x86_64 + ARM64)
+samples-go-cross: samples-go
+	@echo ""
+	@echo "Building Go samples (ARM64 cross-compile)..."
+	cd examples/samples && GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 go build -ldflags="-extldflags '-static'" -o trigger_syscalls_arm64 trigger_syscalls.go 2>&1 | grep -v "warning:" || true
+	@echo "Go ARM64 sample built: examples/samples/trigger_syscalls_arm64"
+	@echo ""
+	@echo "Verifying static linking..."
+	@if ldd examples/samples/trigger_syscalls_arm64 2>&1 | grep -q "not a dynamic executable"; then \
+		echo "✓ trigger_syscalls_arm64 is statically linked"; \
+	else \
+		echo "WARNING: trigger_syscalls_arm64 may have dynamic dependencies"; \
+	fi
+
+# Cross-compile all samples
+samples-cross: samples-go-cross
+	@echo ""
+	@echo "Cross-compilation complete"
+	@echo "Architectures: x86_64, arm64"
 
 # Build Docker image
 docker-build:
