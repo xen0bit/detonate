@@ -96,3 +96,10 @@ examples/samples/minimal_x8664
 examples/samples/trigger_x86_64
 examples/samples/trigger_x8664
 examples/samples/data/
+
+# Qiling rootfs submodule (tracked separately)
+data/qiling_rootfs/
+
+# User-provided Windows DLLs (do not commit)
+data/rootfs/*_windows/
+!data/rootfs/.gitkeep

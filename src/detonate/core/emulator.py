@@ -156,29 +156,60 @@ class DetonateEmulator:
         # Import qiling here to avoid import errors if not installed
         try:
             from qiling import Qiling
-            from qiling.const import QL_ARCH, QL_OS
+            from qiling.const import QL_ARCH, QL_ENDIAN, QL_OS
         except ImportError:
             raise RuntimeError("Qiling not installed. Run: pip install qiling")
 
         # Map platform/arch to Qiling enums
         arch_map = {
+            # x86 family
             "x86": QL_ARCH.X86,
+            "i386": QL_ARCH.X86,
+            "i686": QL_ARCH.X86,
             "x86_64": QL_ARCH.X8664,
+            "x64": QL_ARCH.X8664,
+            "amd64": QL_ARCH.X8664,
+            # ARM family
             "arm": QL_ARCH.ARM,
+            "armv7": QL_ARCH.ARM,
             "arm64": QL_ARCH.ARM64,
+            "aarch64": QL_ARCH.ARM64,
+            # MIPS family (endianness handled separately via endian param)
+            "mips": QL_ARCH.MIPS,
+            "mips32": QL_ARCH.MIPS,
+            "mipsel": QL_ARCH.MIPS,
+            "mips32el": QL_ARCH.MIPS,
+            # RISC-V
+            "riscv64": QL_ARCH.RISCV64,
         }
         os_map = {
             "windows": QL_OS.WINDOWS,
             "linux": QL_OS.LINUX,
         }
+        # MIPS endianness mapping
+        endian_map = {
+            "mips": QL_ENDIAN.EB,      # Big-endian
+            "mips32": QL_ENDIAN.EB,    # Big-endian
+            "mipsel": QL_ENDIAN.EL,    # Little-endian
+            "mips32el": QL_ENDIAN.EL,  # Little-endian
+        }
 
         ql_arch = arch_map.get(self.architecture)
         ql_os = os_map.get(self.platform)
+        ql_endian = endian_map.get(self.architecture)  # None for non-MIPS
 
         if ql_arch is None:
             raise ValueError(f"Unsupported architecture: {self.architecture}")
         if ql_os is None:
             raise ValueError(f"Unsupported platform: {self.platform}")
+
+        # Validate Windows DLLs if analyzing Windows binary
+        if self.platform == "windows":
+            from ..config import validate_windows_dlls
+            
+            is_valid, error_msg = validate_windows_dlls(self.architecture)
+            if not is_valid:
+                raise FileNotFoundError(error_msg)
 
         # Validate that the sample binary matches the detected architecture
         # Mismatched architecture causes silent emulation failures in Qiling
@@ -195,13 +226,19 @@ class DetonateEmulator:
 
         # Initialize Qiling with proper error handling
         try:
-            ql = Qiling(
-                argv=[str(self.sample_path)],
-                rootfs=str(self.rootfs_path),
-                archtype=ql_arch,
-                ostype=ql_os,
-                console=False,
-            )
+            # Build kwargs dynamically - endian only for MIPS architectures
+            ql_kwargs = {
+                "argv": [str(self.sample_path)],
+                "rootfs": str(self.rootfs_path),
+                "archtype": ql_arch,
+                "ostype": ql_os,
+                "console": False,
+            }
+            # Add endian parameter for MIPS (required for correct byte order)
+            if ql_endian is not None:
+                ql_kwargs["endian"] = ql_endian
+            
+            ql = Qiling(**ql_kwargs)
         except FileNotFoundError as e:
             # Missing rootfs files (e.g., ld-linux, libc)
             raise RuntimeError(

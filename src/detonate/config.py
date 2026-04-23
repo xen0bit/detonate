@@ -83,11 +83,11 @@ class Settings(BaseSettings):
         return self
 
     # Rootfs paths
-    rootfs: str = "/app/data/rootfs"
+    rootfs: str = "./data/qiling_rootfs"
 
     # Windows DLL paths (user-provided)
-    dlls_x86: str = "/opt/rootfs/x86_windows/dlls"
-    dlls_x64: str = "/opt/rootfs/x8664_windows/dlls"
+    dlls_x86: str = "./data/rootfs/x86_windows/dlls"
+    dlls_x64: str = "./data/rootfs/x8664_windows/dlls"
 
     # Analysis defaults
     default_timeout: int = 60
@@ -112,28 +112,142 @@ class Settings(BaseSettings):
         return Path(self.database).parent
 
     def get_rootfs_path(self, platform: str, arch: str) -> Path:
-        """Get rootfs path for given platform and architecture."""
-        platform_map = {
-            "windows": "x86_windows" if arch == "x86" else "x8664_windows",
-            "linux": "x86_linux" if arch == "x86" else "x8664_linux",
+        """Get rootfs path for given platform and architecture.
+        
+        Supported architectures (priority order):
+        - High: x86_64, x86, arm64
+        - Medium: arm, mips, mipsel
+        - Low: riscv64
+        
+        Architecture aliases supported:
+        - x86_64: x64, amd64
+        - x86: i386, i686
+        - arm64: aarch64
+        
+        Args:
+            platform: Target platform (linux, windows)
+            arch: Architecture name (auto-detected or user-specified)
+        
+        Returns:
+            Path to rootfs directory for given platform/arch
+        
+        Raises:
+            ValueError: If architecture unsupported
+        """
+        # Normalize architecture names with aliases
+        arch_aliases = {
+            # x86_64 aliases
+            "x86_64": "x8664",
+            "x64": "x8664",
+            "amd64": "x8664",
+            # x86 aliases
+            "x86": "x86",
+            "i386": "x86",
+            "i686": "x86",
+            # ARM64 aliases
+            "arm64": "arm64",
+            "aarch64": "arm64",
+            # ARM aliases
+            "arm": "arm",
+            "armv7": "arm",
+            # MIPS aliases
+            "mips": "mips32",
+            "mips32": "mips32",
+            "mipsel": "mips32el",
+            # RISC-V
+            "riscv64": "riscv64",
         }
-        path = Path(self.rootfs) / platform_map.get(platform, "x86_linux")
-        # For Linux, fall back to system rootfs if custom rootfs is empty/missing
-        if platform == "linux" and not _is_valid_rootfs(path):
-            return Path("/")  # Use host filesystem as rootfs
-        return path
+        
+        normalized_arch = arch_aliases.get(arch.lower(), arch.lower())
+        
+        if platform == "windows":
+            # Windows uses separate rootfs (user-provided DLLs)
+            path_name = f"{normalized_arch}_windows"
+            # Point to user-provided Windows DLLs in data/rootfs/
+            return Path("./data/rootfs") / path_name
+        else:  # linux
+            path_name = f"{normalized_arch}_linux"
+            path = Path(self.rootfs) / path_name
+            
+            # Validate rootfs has required files
+            if not _is_valid_rootfs(path):
+                # Fall back to system rootfs for Linux
+                return Path("/")
+            
+            return path
 
 
 def _is_valid_rootfs(path: Path) -> bool:
-    """Check if the rootfs path contains the minimum required files."""
+    """Check if the rootfs path contains minimum required files.
+    
+    Validates presence of architecture-specific dynamic linker.
+    
+    Args:
+        path: Path to rootfs directory
+    
+    Returns:
+        True if rootfs is valid, False otherwise
+    """
     if not path.exists():
         return False
-    # Check for dynamic linker presence
+    
+    # Architecture-specific dynamic linker paths
+    # Note: Some architectures use lib/ instead of lib64/
     ld_paths = [
+        # x86_64
         path / "lib64" / "ld-linux-x86-64.so.2",
+        # x86
         path / "lib" / "ld-linux.so.2",
+        # ARM64 (can be in lib/ or lib64/)
+        path / "lib" / "ld-linux-aarch64.so.1",
+        path / "lib64" / "ld-linux-aarch64.so.1",
+        # ARM
+        path / "lib" / "ld-linux-armhf.so.3",
+        # MIPS
+        path / "lib" / "ld.so.1",
+        # RISC-V 64
+        path / "lib64" / "ld-linux-riscv64-lp64d.so.1",
     ]
+    
     return any(p.exists() for p in ld_paths)
+
+
+def validate_windows_dlls(arch: str) -> tuple[bool, str | None]:
+    """Validate that required Windows DLLs are present.
+    
+    Args:
+        arch: Architecture (x86 or x86_64)
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+        - is_valid: True if DLLs present
+        - error_message: None if valid, helpful message if missing
+    """
+    dll_dir = Path("./data/rootfs") / f"{arch}_windows" / "dlls"
+    
+    if not dll_dir.exists():
+        return False, (
+            f"Windows DLLs not found at {dll_dir}\n"
+            f"Please copy required DLLs from a Windows installation:\n"
+            f"  mkdir -p {dll_dir}\n"
+            f"  cp kernel32.dll ntdll.dll user32.dll advapi32.dll {dll_dir}/\n"
+            f"\n"
+            f"See WINDOWS_DLL_SETUP.md for detailed instructions."
+        )
+    
+    # Check for essential DLLs
+    required_dlls = ["kernel32.dll", "ntdll.dll"]
+    missing = [dll for dll in required_dlls if not (dll_dir / dll).exists()]
+    
+    if missing:
+        return False, (
+            f"Missing required Windows DLLs: {', '.join(missing)}\n"
+            f"Please copy these DLLs to: {dll_dir}\n"
+            f"\n"
+            f"See WINDOWS_DLL_SETUP.md for detailed instructions."
+        )
+    
+    return True, None
 
 
 def get_dlls_path(arch: str) -> Path:

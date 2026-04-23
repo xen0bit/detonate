@@ -1,7 +1,7 @@
 # Detonate Makefile
 # Common workflows for development, testing, and deployment
 
-.PHONY: help install dev clean test test-cov lint typecheck build docker-build docker-run analyze samples samples-clean samples-go samples-go-cross samples-cross docker-test web-dev web-download-deps web-lint web-build test-web
+.PHONY: help install dev clean test test-cov lint typecheck build docker-build docker-run analyze samples samples-clean samples-go samples-go-cross samples-cross docker-test web-dev web-download-deps web-lint web-build test-web rootfs-init rootfs-update rootfs-list rootfs-clean
 
 # Default target
 help:
@@ -43,8 +43,113 @@ PYTHON := uv run python
 DETONATE := uv run detonate
 
 # Install dependencies
-install:
+install: rootfs-init
+	@echo ""
+	@echo "Installing Python dependencies with uv..."
 	uv sync
+	@echo ""
+	@echo "========================================"
+	@echo "Installation complete!"
+	@echo "========================================"
+	@echo ""
+	@echo "Next steps:"
+	@echo "  1. Build test samples: make samples"
+	@echo "  2. Run end-to-end tests: make test-e2e"
+	@echo "  3. Analyze a sample: detonate analyze <binary>"
+	@echo ""
+	@echo "For Windows binary analysis:"
+	@echo "  - See WINDOWS_DLL_SETUP.md for DLL setup"
+	@echo ""
+
+# =============================================================================
+# Rootfs Management
+# =============================================================================
+
+# Initialize Qiling rootfs submodule (first-time setup)
+# Uses shallow clone (--depth 1) for fast initialization
+rootfs-init:
+	@echo "========================================"
+	@echo "Initializing Qiling rootfs submodule..."
+	@echo "========================================"
+	@if git submodule status data/qiling_rootfs 2>/dev/null | grep -q "^-"; then \
+		echo "✓ Rootfs submodule registered but not initialized"; \
+		echo "Initializing submodule..."; \
+		git submodule update --init data/qiling_rootfs; \
+	elif [ -d "data/qiling_rootfs" ] && [ -f "data/qiling_rootfs/.git" ]; then \
+		echo "✓ Rootfs submodule already exists"; \
+		echo "Updating to latest version..."; \
+		git submodule update --remote data/qiling_rootfs; \
+	else \
+		echo "Cloning Qiling rootfs repository (shallow clone)..."; \
+		git submodule add --depth 1 https://github.com/qilingframework/rootfs.git data/qiling_rootfs; \
+	fi
+	@echo ""
+	@echo "Available rootfs architectures:"
+	@ls -1 data/qiling_rootfs/ | grep -E "_(linux|windows)$$" | while read dir; do \
+		echo "  - $$dir"; \
+	done
+	@echo ""
+	@echo "Priority architectures (tested):"
+	@echo "  ✓ x86_64 (x8664_linux)"
+	@echo "  ✓ x86 (x86_linux)"
+	@echo "  ✓ arm64 (arm64_linux)"
+	@echo ""
+	@echo "Extended architectures (community support):"
+	@echo "  - arm (arm_linux)"
+	@echo "  - mips (mips32_linux)"
+	@echo "  - mipsel (mips32el_linux)"
+	@echo "  - riscv64 (riscv64_linux)"
+	@echo ""
+	@echo "========================================"
+	@echo "Rootfs initialization complete!"
+	@echo "========================================"
+
+# Update rootfs submodule to latest version
+rootfs-update:
+	@echo "Updating Qiling rootfs submodule to latest version..."
+	git submodule update --remote data/qiling_rootfs
+	@echo "✓ Rootfs updated successfully"
+	@echo ""
+	@echo "Run 'make rootfs-list' to see available architectures"
+
+# List available rootfs architectures
+rootfs-list:
+	@echo "Available Qiling rootfs architectures:"
+	@echo ""
+	@echo "Linux:"
+	@ls -1 data/qiling_rootfs/ | grep "_linux$$" | while read dir; do \
+		echo "  - $$dir"; \
+	done
+	@echo ""
+	@echo "Windows (user-provided DLLs required):"
+	@echo "  - x86_windows (data/rootfs/x86_windows/dlls/)"
+	@echo "  - x8664_windows (data/rootfs/x8664_windows/dlls/)"
+	@echo ""
+	@echo "See WINDOWS_DLL_SETUP.md for Windows DLL setup instructions"
+
+# Clean rootfs (use with caution - removes submodule)
+rootfs-clean:
+	@echo "WARNING: This will remove the Qiling rootfs submodule!"
+	@echo "You will need to run 'make rootfs-init' to re-download."
+	@echo ""
+	@if [ "$(FORCE)" = "1" ] || [ -t 0 ]; then \
+		if [ "$(FORCE)" = "1" ]; then \
+			echo "FORCE=1 set - skipping confirmation"; \
+		else \
+			read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 0; \
+		fi; \
+		echo "Removing rootfs submodule..."; \
+		git submodule deinit --force data/qiling_rootfs 2>/dev/null || true; \
+		rm -rf data/qiling_rootfs; \
+		git config --remove-section submodule.data/qiling_rootfs 2>/dev/null || true; \
+		echo "✓ Rootfs submodule removed"; \
+		echo ""; \
+		echo "To re-initialize: make rootfs-init"; \
+	else \
+		echo "Not running in interactive mode."; \
+		echo "Use 'make rootfs-clean FORCE=1' to force removal in CI/automation."; \
+		exit 1; \
+	fi
 
 # Install with dev dependencies
 dev:

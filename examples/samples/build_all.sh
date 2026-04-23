@@ -2,7 +2,7 @@
 # Build all safe test samples for detonate
 # Requires: gcc (with multilib support for x86), standard C library, Go (optional)
 
-set -e
+# Removed: set -e (conflicts with graceful error handling below)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -53,12 +53,12 @@ check_go_prerequisites() {
 # =============================================================================
 
 # Build minimal_x86_64 (64-bit, exit only)
-echo "[1/7] Building minimal_x86_64..."
+echo "[1/8] Building minimal_x86_64..."
 gcc -static -o minimal_x86_64 minimal_x86_64.c
 echo "      -> minimal_x86_64 ($(stat -c%s minimal_x86_64) bytes)"
 
 # Build minimal_x86 (32-bit, exit only)
-echo "[2/7] Building minimal_x86..."
+echo "[2/8] Building minimal_x86..."
 gcc -static -m32 -o minimal_x86 minimal_x86.c 2>/dev/null || {
     echo "      WARNING: 32-bit build failed (install gcc-multilib?)"
     echo "      -> minimal_x86 SKIPPED"
@@ -68,23 +68,27 @@ if [ -f minimal_x86 ]; then
 fi
 
 # Build trigger_x86_64 (64-bit, multiple syscalls)
-echo "[3/7] Building trigger_x86_64..."
+echo "[3/8] Building trigger_x86_64..."
 gcc -static -o trigger_x86_64 trigger_x86_64.c
 echo "      -> trigger_x86_64 ($(stat -c%s trigger_x86_64) bytes)"
 
 # Build trigger_syscalls_c (C comprehensive syscall trigger)
-echo "[4/7] Building trigger_syscalls_c (C x86_64)..."
+echo "[4/8] Building trigger_syscalls_c (C x86_64)..."
 gcc -static -o trigger_syscalls_c trigger_syscalls.c
 echo "      -> trigger_syscalls_c ($(stat -c%s trigger_syscalls_c) bytes)"
 
 # Build trigger_syscalls_c_arm64 (C ARM64 cross-compile)
-echo "[5/7] Building trigger_syscalls_c_arm64 (C ARM64)..."
-aarch64-linux-gnu-gcc -static -o trigger_syscalls_c_arm64 trigger_syscalls.c 2>/dev/null && \
-    echo "      -> trigger_syscalls_c_arm64 ($(stat -c%s trigger_syscalls_c_arm64) bytes)" || \
-    echo "      -> trigger_syscalls_c_arm64: SKIPPED (cross-compiler not available)"
+echo "[5/8] Building trigger_syscalls_c_arm64 (C ARM64)..."
+if command -v aarch64-linux-gnu-gcc &> /dev/null; then
+    aarch64-linux-gnu-gcc -static -o trigger_syscalls_c_arm64 trigger_syscalls.c && \
+        echo "      -> trigger_syscalls_c_arm64 ($(stat -c%s trigger_syscalls_c_arm64) bytes)" || \
+        { echo "      -> WARNING: ARM64 build failed"; rm -f trigger_syscalls_c_arm64; }
+else
+    echo "      -> SKIPPED (install gcc-aarch64-linux-gnu for ARM64 support)"
+fi
 
 # Build fake_pe_x86.exe (minimal PE header)
-echo "[6/7] Building fake_pe_x86.exe..."
+echo "[6/8] Building fake_pe_x86.exe..."
 # Create minimal PE header: MZ stub + minimal PE header
 # This is not a functional executable, just enough for PE detection
 printf 'MZ' > fake_pe_x86.exe
@@ -110,26 +114,26 @@ echo "      -> fake_pe_x86.exe ($(stat -c%s fake_pe_x86.exe) bytes)"
 # Build Go samples (if prerequisites available)
 if check_go_prerequisites; then
     # Build trigger_syscalls_go (Go x86_64)
-    echo "[7/7] Building trigger_syscalls_go (Go x86_64)..."
+    echo "[7/8] Building trigger_syscalls_go (Go x86_64)..."
     cd "${SCRIPT_DIR}"
-    GO111MODULE=off CGO_ENABLED=1 go build -ldflags="-extldflags '-static'" -o trigger_syscalls_go trigger_syscalls.go 2>&1 | grep -v "warning:" || true
-    if [ -f trigger_syscalls_go ]; then
+    if GO111MODULE=off CGO_ENABLED=1 go build -ldflags="-extldflags '-static'" -o trigger_syscalls_go trigger_syscalls.go 2>&1 | grep -v "warning:"; then
         echo "      -> trigger_syscalls_go ($(stat -c%s trigger_syscalls_go) bytes)"
     else
-        echo "      -> WARNING: Go build failed"
+        echo "      -> WARNING: Go build failed (check errors above)"
+        rm -f trigger_syscalls_go
     fi
     
     # Build trigger_syscalls_go_arm64 (Go ARM64 cross-compile)
     echo "[8/8] Building trigger_syscalls_go_arm64 (Go ARM64)..."
-    GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 \
-        go build -ldflags="-extldflags '-static'" -o trigger_syscalls_go_arm64 trigger_syscalls.go 2>&1 | grep -v "warning:" || true
-    if [ -f trigger_syscalls_go_arm64 ]; then
+    if GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 \
+        go build -ldflags="-extldflags '-static'" -o trigger_syscalls_go_arm64 trigger_syscalls.go 2>&1 | grep -v "warning:"; then
         echo "      -> trigger_syscalls_go_arm64 ($(stat -c%s trigger_syscalls_go_arm64) bytes)"
     else
-        echo "      -> WARNING: ARM64 Go build failed"
+        echo "      -> WARNING: ARM64 Go build failed (check errors above)"
+        rm -f trigger_syscalls_go_arm64
     fi
 else
-    echo "[7/7] Skipping Go builds (missing prerequisites)"
+    echo "[7/8] Skipping Go builds (missing prerequisites)"
     echo "[8/8] Skipping Go ARM64 builds"
 fi
 

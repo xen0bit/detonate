@@ -3,7 +3,7 @@
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -17,6 +17,7 @@ def create_mock_qiling():
     mock_ql.arch.pc = 0x00401000
     mock_ql.os.set_api = MagicMock()
     mock_ql.hook_intno = MagicMock()
+    mock_ql.os.set_syscall = MagicMock()
     mock_ql.run = MagicMock()
     return mock_ql
 
@@ -34,6 +35,17 @@ def setup_qiling_mock(monkeypatch, mock_ql=None):
     
     monkeypatch.setitem(sys.modules, "qiling", mock_module)
     return mock_qiling_class, mock_ql
+
+
+def setup_windows_dll_mock(monkeypatch):
+    """Set up Windows DLL validation mock to return valid.
+    
+    Patch where defined (config.py) since emulator.py does local import.
+    """
+    monkeypatch.setattr(
+        "src.detonate.config.validate_windows_dlls",
+        lambda arch: (True, None)
+    )
 
 
 class TestDetonateEmulatorInit:
@@ -257,6 +269,7 @@ class TestEmulatorRun:
         """Test that run creates an analysis session."""
         mock_ql = create_mock_qiling()
         mock_qiling_class, _ = setup_qiling_mock(monkeypatch, mock_ql)
+        setup_windows_dll_mock(monkeypatch)
 
         sample = temp_dir / "test.exe"
         sample.write_bytes(b"MZ" + b"\x00" * 100)
@@ -283,6 +296,7 @@ class TestEmulatorRun:
         """Test that session metadata is recorded correctly."""
         mock_ql = create_mock_qiling()
         mock_qiling_class, _ = setup_qiling_mock(monkeypatch, mock_ql)
+        setup_windows_dll_mock(monkeypatch)
 
         sample = temp_dir / "test.exe"
         sample.write_bytes(b"MZ" + b"\x00" * 100)
@@ -348,6 +362,7 @@ class TestTimeoutEnforcement:
         
         mock_ql.run = blocking_run
         mock_qiling_class, _ = setup_qiling_mock(monkeypatch, mock_ql)
+        setup_windows_dll_mock(monkeypatch)
 
         sample = temp_dir / "test.exe"
         sample.write_bytes(b"MZ" + b"\x00" * 100)
@@ -379,6 +394,7 @@ class TestExceptionHandling:
         mock_ql = create_mock_qiling()
         mock_ql.run = MagicMock(side_effect=Exception("Emulation crashed"))
         mock_qiling_class, _ = setup_qiling_mock(monkeypatch, mock_ql)
+        setup_windows_dll_mock(monkeypatch)
 
         sample = temp_dir / "test.exe"
         sample.write_bytes(b"MZ" + b"\x00" * 100)
@@ -405,6 +421,7 @@ class TestExceptionHandling:
         mock_ql = create_mock_qiling()
         mock_ql.run = MagicMock(side_effect=Exception("Immediate crash"))
         mock_qiling_class, _ = setup_qiling_mock(monkeypatch, mock_ql)
+        setup_windows_dll_mock(monkeypatch)
 
         sample = temp_dir / "test.exe"
         sample.write_bytes(b"MZ" + b"\x00" * 100)
@@ -435,6 +452,7 @@ class TestHookInstallation:
         """Test that Windows hooks are installed for Windows platform."""
         mock_ql = create_mock_qiling()
         mock_qiling_class, _ = setup_qiling_mock(monkeypatch, mock_ql)
+        setup_windows_dll_mock(monkeypatch)
 
         sample = temp_dir / "test.exe"
         sample.write_bytes(b"MZ" + b"\x00" * 100)
@@ -489,6 +507,7 @@ class TestAnalysisResult:
         """Test that result contains API call records."""
         mock_ql = create_mock_qiling()
         mock_qiling_class, _ = setup_qiling_mock(monkeypatch, mock_ql)
+        setup_windows_dll_mock(monkeypatch)
 
         sample = temp_dir / "test.exe"
         sample.write_bytes(b"MZ" + b"\x00" * 100)
@@ -511,6 +530,7 @@ class TestAnalysisResult:
         """Test that result contains technique findings."""
         mock_ql = create_mock_qiling()
         mock_qiling_class, _ = setup_qiling_mock(monkeypatch, mock_ql)
+        setup_windows_dll_mock(monkeypatch)
 
         sample = temp_dir / "test.exe"
         sample.write_bytes(b"MZ" + b"\x00" * 100)
@@ -533,6 +553,7 @@ class TestAnalysisResult:
         """Test that result contains extracted strings."""
         mock_ql = create_mock_qiling()
         mock_qiling_class, _ = setup_qiling_mock(monkeypatch, mock_ql)
+        setup_windows_dll_mock(monkeypatch)
 
         sample = temp_dir / "test.exe"
         sample.write_bytes(b"MZ" + b"\x00" * 100)

@@ -106,44 +106,67 @@ The Go sample triggers **45+ syscalls** mapped to **16+ unique ATT&CK techniques
 
 **Total: 16 unique techniques, 45+ syscall invocations**
 
-## Go Sample: trigger_syscalls
+## Go Sample: trigger_syscalls_go
 
 ### Overview
 
-Statically-linked Go binary that safely triggers syscalls across all major ATT&CK tactics. Uses CGO for the ptrace syscall (not available in pure Go stdlib).
+Statically-linked Go binary that safely triggers syscalls mapped to ATT&CK techniques. Uses CGO for the ptrace syscall.
 
-### ⚠️ Qiling Emulation Limitation
+### ⚠️ Qiling Emulation Limitations
 
-**Important:** Go binaries have complex runtime initialization (goroutines, garbage collector, network stack) that often exceeds Qiling's userspace emulation capabilities. The Go sample **builds successfully** but may not fully execute in the emulator.
+**Important:** Go binaries have complex runtime initialization (goroutines, garbage collector, network stack) that may exceed Qiling's userspace emulation capabilities, even with the official rootfs.
 
-**For reliable detonate testing, use the C `trigger_x86_64` sample instead.** The Go sample is provided for:
-- Build system verification
-- Static analysis testing
-- Future Qiling versions with improved Go support
+**With the new Qiling rootfs:**
+- ✅ Proper system libraries available (libc, ld-linux)
+- ✅ Better syscall emulation
+- ⚠️ Go runtime may still cause emulation failures
 
-### Build Requirements
-
-```bash
-# Go 1.20+ (verified with 1.26.2)
-go version
-
-# GCC for CGO
-gcc --version
-
-# ARM64 cross-compiler (optional)
-aarch64-linux-gnu-gcc --version
-```
+**For reliable detonate testing, use the C `trigger_syscalls_c` sample instead.**
 
 ### Build Commands
 
 ```bash
 # Native x86_64 build (statically linked)
-GO111MODULE=off CGO_ENABLED=1 go build -ldflags="-extldflags '-static'" -o trigger_syscalls trigger_syscalls.go
+GO111MODULE=off CGO_ENABLED=1 go build -ldflags="-extldflags '-static'" -o trigger_syscalls_go trigger_syscalls.go
 
-# ARM64 cross-compile
+# ARM64 cross-compile (requires aarch64-linux-gnu-gcc)
 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 \
-    go build -ldflags="-extldflags '-static'" -o trigger_syscalls_arm64 trigger_syscalls.go
+    go build -ldflags="-extldflags '-static'" -o trigger_syscalls_go_arm64 trigger_syscalls.go
 ```
+
+### Testing with New Rootfs
+
+```bash
+# Initialize rootfs first
+make rootfs-init
+
+# Analyze Go sample
+detonate analyze trigger_syscalls_go \
+    --platform linux \
+    --arch x86_64 \
+    --format all \
+    --output ./results
+
+# Check results
+# Expected: Improved emulation over previous attempts
+# May still hit Go runtime initialization issues
+```
+
+### Expected Behavior
+
+**With minimal rootfs (old):**
+- ❌ Immediate failure (missing libraries)
+
+**With Qiling official rootfs (new):**
+- ⚠️ May progress further into Go runtime initialization
+- ⚠️ May still fail at goroutine scheduler setup
+- ✅ Better error messages for debugging
+
+**Recommended workflow:**
+1. Try Go sample with new rootfs
+2. If emulation fails, check logs for specific error
+3. Use C sample (`trigger_syscalls_c`) for reliable testing
+4. Report Go-specific errors for Qiling improvement
 
 ### Safety Guarantees
 
