@@ -156,6 +156,10 @@ class AnalysisSession:
         api_call: APICallRecord,
     ) -> None:
         """Add evidence for a technique match."""
+        # Update the API call record with the technique_id
+        api_call.technique_id = technique_id
+        api_call.confidence = confidence
+        
         if technique_id not in self.findings:
             self.findings[technique_id] = TechniqueMatch(
                 technique_id=technique_id,

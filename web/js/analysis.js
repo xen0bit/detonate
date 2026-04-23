@@ -122,8 +122,9 @@ function showError(message) {
 function renderOverview() {
   const data = analysisData;
   
-  // Header
-  document.getElementById('header-filename').textContent = data.filename || 'Unknown';
+  // Header - use SHA256 prefix as filename since original filename is not stored
+  const displayName = data.sha256 ? data.sha256.substring(0, 16) + '...' : 'Unknown';
+  document.getElementById('header-filename').textContent = displayName;
   document.getElementById('header-session').textContent = data.session_id || sessionId;
   
   const statusEl = document.getElementById('header-status');
@@ -137,12 +138,12 @@ function renderOverview() {
   document.getElementById('overview-duration').textContent = formatDuration(data.started_at, data.completed_at);
   
   // Sample info
-  document.getElementById('info-filename').textContent = data.filename || 'Unknown';
+  document.getElementById('info-filename').textContent = data.filename || data.session_id.substring(0, 16) + '...';
   document.getElementById('info-md5').textContent = data.md5 || 'N/A';
   document.getElementById('info-sha256').textContent = data.sha256 || 'N/A';
   document.getElementById('info-filetype').textContent = data.file_type || 'N/A';
   document.getElementById('info-platform').textContent = data.platform || 'N/A';
-  document.getElementById('info-arch').textContent = data.arch || 'N/A';
+  document.getElementById('info-arch').textContent = data.architecture || 'N/A';
   
   // Timeline
   document.getElementById('timeline-created').textContent = data.created_at ? formatAbsoluteTime(data.created_at) : 'N/A';
@@ -154,7 +155,7 @@ function renderOverview() {
   const techniquesCount = data.techniques_count || 0;
   document.getElementById('overview-summary').textContent = 
     `This analysis detected ${techniquesCount} MITRE ATT&CK technique${techniquesCount !== 1 ? 's' : ''} ` +
-    `with ${data.findings?.length || 0} total evidence item${data.findings?.length !== 1 ? 's' : ''}.`;
+    `across multiple tactics.`;
 }
 
 /**
@@ -523,13 +524,19 @@ function formatAPICallRow(call) {
   if (hasParams) {
     try {
       // params_json may already be parsed (object) or a string
-      const parsed = typeof call.params_json === 'string' ? JSON.parse(call.params_json) : call.params_json;
+      let parsed = call.params_json;
+      if (typeof call.params_json === 'string') {
+        parsed = JSON.parse(call.params_json);
+      } else if (typeof call.params_json === 'object') {
+        // Already an object, stringify it properly
+        parsed = call.params_json;
+      }
       formattedJson = escapeHtml(JSON.stringify(parsed, null, 2));
     } catch (e) {
       // Malformed JSON - display raw string with warning
-      console.warn('Malformed params_json for call', sequenceNum, ':', e.message);
-      formattedJson = escapeHtml('⚠️ Malformed JSON: ' + call.params_json);
-      buttonLabel = 'Show (raw)';
+      console.warn('Malformed params_json for call', sequenceNum, ':', e.message, call.params_json);
+      formattedJson = escapeHtml('⚠️ Could not display parameters');
+      buttonLabel = 'Show (error)';
     }
   }
   

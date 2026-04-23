@@ -217,6 +217,10 @@ async def get_analysis_status(session_id: str, request: Request):
             raise HTTPException(status_code=404, detail="Analysis not found")
         # Analysis exists in DB but not in memory (server restart)
         # Return full info from DB
+        # Get findings count
+        findings_data = db.get_analysis_with_data(session_id, include_findings=True, include_api_calls=False, include_strings=False)
+        techniques_count = len(findings_data.findings) if findings_data and findings_data.findings else 0
+        
         return {
             "session_id": session_id,
             "status": db_analysis.status,
@@ -227,8 +231,10 @@ async def get_analysis_status(session_id: str, request: Request):
             "md5": db_analysis.sample_md5,
             "sha256": db_analysis.sample_sha256,
             "file_type": db_analysis.file_type,
+            "started_at": db_analysis.created_at.isoformat() if db_analysis.created_at else None,
             "completed_at": db_analysis.completed_at.isoformat() if db_analysis.completed_at else None,
             "duration_seconds": db_analysis.duration_seconds,
+            "techniques_count": techniques_count,
             "findings": [],
             "outputs": {
                 "navigator": f"/api/v1/reports/{session_id}/navigator",
@@ -255,14 +261,19 @@ async def get_analysis_status(session_id: str, request: Request):
         response["md5"] = db_analysis.sample_md5
         response["sha256"] = db_analysis.sample_sha256
         response["file_type"] = db_analysis.file_type
+        response["started_at"] = db_analysis.created_at.isoformat() if db_analysis.created_at else None
         response["completed_at"] = db_analysis.completed_at.isoformat() if db_analysis.completed_at else None
         response["duration_seconds"] = db_analysis.duration_seconds
+        
+        # Get findings count
+        findings_data = db.get_analysis_with_data(session_id, include_findings=True, include_api_calls=False, include_strings=False)
+        response["techniques_count"] = len(findings_data.findings) if findings_data and findings_data.findings else 0
 
     if task_info.get("status") == "completed":
         response["analysis"] = {
             "completed_at": task_info.get("completed_at"),
             "duration_seconds": response.get("duration_seconds", 0.1),
-            "techniques_detected": 0,
+            "techniques_detected": response.get("techniques_count", 0),
             "tactics_observed": [],
         }
         response["findings"] = []
@@ -274,6 +285,40 @@ async def get_analysis_status(session_id: str, request: Request):
         }
 
     return response
+
+
+async def get_analysis_full_data(session_id: str, db: DatabaseStore) -> dict:
+    """Helper to get full analysis data from database."""
+    db_analysis = db.get_analysis(session_id)
+    if not db_analysis:
+        return None
+    
+    # Get findings count
+    findings_data = db.get_analysis_with_data(session_id, include_findings=True, include_api_calls=False, include_strings=False)
+    techniques_count = len(findings_data.findings) if findings_data and findings_data.findings else 0
+    
+    return {
+        "session_id": session_id,
+        "status": db_analysis.status,
+        "created_at": db_analysis.created_at.isoformat() if db_analysis.created_at else None,
+        "file_size": db_analysis.sample_size,
+        "platform": db_analysis.platform,
+        "architecture": db_analysis.architecture,
+        "md5": db_analysis.sample_md5,
+        "sha256": db_analysis.sample_sha256,
+        "file_type": db_analysis.file_type,
+        "started_at": db_analysis.created_at.isoformat() if db_analysis.created_at else None,
+        "completed_at": db_analysis.completed_at.isoformat() if db_analysis.completed_at else None,
+        "duration_seconds": db_analysis.duration_seconds,
+        "techniques_count": techniques_count,
+        "findings": [],
+        "outputs": {
+            "navigator": f"/api/v1/reports/{session_id}/navigator",
+            "stix": f"/api/v1/reports/{session_id}/stix",
+            "report": f"/api/v1/reports/{session_id}/report",
+            "log": f"/api/v1/reports/{session_id}/log",
+        } if db_analysis.status == "completed" else None,
+    }
 
 
 @router.get("/reports")
@@ -380,17 +425,55 @@ async def get_stix_report(session_id: str, request: Request):
             raise HTTPException(status_code=400, detail="Analysis not completed")
         sample_sha256 = db_analysis.sample_sha256
 
-    # Generate STIX bundle (would use real data from DB in production)
+    # Get findings from database
+    findings_data = db.get_analysis_with_data(session_id, include_findings=True, include_api_calls=True, include_strings=True)
+    
+    # Convert DB findings to TechniqueMatch objects
+    technique_matches = []
+    if findings_data and hasattr(findings_data, 'findings') and findings_data.findings:
+        for f in findings_data.findings:
+            technique_matches.append(TechniqueMatch(
+                technique_id=f.technique_id,
+                technique_name=f.technique_name,
+                tactic=f.tactic,
+                confidence=f.confidence,
+                confidence_score=f.confidence_score,
+                evidence_count=f.evidence_count,
+                first_seen=f.first_seen,
+                last_seen=f.last_seen,
+            ))
+    
+    # Convert DB API calls to APICallRecord objects
+    api_call_records = []
+    if findings_data and hasattr(findings_data, 'api_calls') and findings_data.api_calls:
+        for call in findings_data.api_calls:
+            api_call_records.append(APICallRecord(
+                timestamp=call.timestamp,
+                api_name=call.api_name,
+                syscall_name=call.syscall_name,
+                params=call.params_json or {},
+                return_value=call.return_value,
+                address=call.address or '',
+                technique_id=call.technique_id,
+                confidence=call.confidence,
+                sequence_number=call.sequence_number,
+            ))
+
+    # Generate STIX bundle with real data
     bundle = generate_stix_bundle(
         session_id=session_id,
         sample_sha256=sample_sha256,
         sample_path="/tmp/sample",
-        findings=[],
-        api_calls=[],
+        findings=technique_matches,
+        api_calls=api_call_records,
+        analysis_date=db_analysis.created_at if db_analysis else None,
     )
 
-    # Convert to dict for JSON response
-    bundle_dict = dict(bundle)
+    # Serialize STIX bundle properly using stix2's serialize method
+    import json
+    from stix2 import Bundle
+    bundle_json = bundle.serialize(pretty=True)
+    bundle_dict = json.loads(bundle_json)
 
     return JSONResponse(
         content=bundle_dict,
@@ -426,22 +509,7 @@ async def get_text_report(session_id: str, request: Request):
     # Get findings from database
     findings_data = db.get_analysis_with_data(session_id, include_findings=True, include_api_calls=True, include_strings=True)
     
-    # Convert DB findings to TechniqueMatch objects
-    technique_matches = []
-    if findings_data and hasattr(findings_data, 'findings') and findings_data.findings:
-        for f in findings_data.findings:
-            technique_matches.append(TechniqueMatch(
-                technique_id=f.technique_id,
-                technique_name=f.technique_name,
-                tactic=f.tactic,
-                confidence=f.confidence,
-                confidence_score=f.confidence_score,
-                evidence_count=f.evidence_count,
-                first_seen=f.first_seen,
-                last_seen=f.last_seen,
-            ))
-    
-    # Convert DB API calls to APICallRecord objects
+    # Convert DB API calls to APICallRecord objects first (needed for evidence)
     api_call_records = []
     if findings_data and hasattr(findings_data, 'api_calls') and findings_data.api_calls:
         for call in findings_data.api_calls:
@@ -455,6 +523,28 @@ async def get_text_report(session_id: str, request: Request):
                 technique_id=call.technique_id,
                 confidence=call.confidence,
                 sequence_number=call.sequence_number,
+            ))
+    
+    # Convert DB findings to TechniqueMatch objects with evidence
+    technique_matches = []
+    if findings_data and hasattr(findings_data, 'findings') and findings_data.findings:
+        for f in findings_data.findings:
+            # Find API calls that match this technique
+            evidence_calls = [
+                call for call in api_call_records
+                if call.technique_id == f.technique_id
+            ]
+            
+            technique_matches.append(TechniqueMatch(
+                technique_id=f.technique_id,
+                technique_name=f.technique_name,
+                tactic=f.tactic,
+                confidence=f.confidence,
+                confidence_score=f.confidence_score,
+                evidence_count=f.evidence_count,
+                first_seen=f.first_seen,
+                last_seen=f.last_seen,
+                evidence=evidence_calls,
             ))
     
     # Convert DB strings

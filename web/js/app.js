@@ -321,6 +321,8 @@ function truncate(str, maxLength = 50) {
  * @returns {string} Escaped string
  */
 function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  if (typeof str !== 'string') str = String(str);
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
