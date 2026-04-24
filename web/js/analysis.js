@@ -514,7 +514,7 @@ function formatAPICallRow(call) {
   const sequenceNum = call.sequence_number || '-';
   const techniqueId = call.technique_id || '-';
   const timestamp = call.timestamp ? new Date(call.timestamp).toLocaleTimeString() : '-';
-  const apiName = escapeHtml(call.api_name || '-');
+  const apiName = escapeHtml(call.api_name || call.syscall_name || '-');
   const hasParams = !!call.params_json;
   
   // Pre-parse and format JSON safely with error handling

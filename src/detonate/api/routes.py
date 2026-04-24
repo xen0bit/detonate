@@ -384,17 +384,63 @@ async def get_navigator_report(session_id: str, request: Request):
             raise HTTPException(status_code=400, detail="Analysis not completed")
         sample_sha256 = task_info.get("sample_sha256", "unknown")
         platform = task_info.get("platform", "windows")
+        architecture = task_info.get("architecture", "x86_64")
     else:
         if db_analysis.status != "completed":
             raise HTTPException(status_code=400, detail="Analysis not completed")
         sample_sha256 = db_analysis.sample_sha256
         platform = db_analysis.platform
+        architecture = db_analysis.architecture
 
-    # Generate navigator layer (would use real findings from DB in production)
+    # Get findings from database
+    findings_data = db.get_analysis_with_data(session_id, include_findings=True, include_api_calls=True, include_strings=True)
+    
+    # Convert DB findings to TechniqueMatch objects with evidence
+    technique_matches = []
+    if findings_data and hasattr(findings_data, 'findings') and findings_data.findings:
+        # Build a map of technique_id to API calls for evidence
+        api_calls_by_technique = {}
+        if findings_data.api_calls:
+            for call in findings_data.api_calls:
+                if call.technique_id:
+                    if call.technique_id not in api_calls_by_technique:
+                        api_calls_by_technique[call.technique_id] = []
+                    api_calls_by_technique[call.technique_id].append(call)
+        
+        for f in findings_data.findings:
+            # Build evidence list for this technique
+            evidence = []
+            if f.technique_id in api_calls_by_technique:
+                for call in api_calls_by_technique[f.technique_id]:
+                    evidence.append(APICallRecord(
+                        timestamp=call.timestamp,
+                        api_name=call.api_name,
+                        syscall_name=call.syscall_name,
+                        params=call.params_json or {},
+                        return_value=call.return_value,
+                        address=call.address or '',
+                        technique_id=call.technique_id,
+                        confidence=call.confidence,
+                        sequence_number=call.sequence_number,
+                    ))
+            
+            technique_matches.append(TechniqueMatch(
+                technique_id=f.technique_id,
+                technique_name=f.technique_name,
+                tactic=f.tactic,
+                confidence=f.confidence,
+                confidence_score=f.confidence_score,
+                evidence_count=f.evidence_count,
+                first_seen=f.first_seen,
+                last_seen=f.last_seen,
+                evidence=evidence,
+            ))
+    
+    # Generate navigator layer with real findings
     layer = generate_navigator_layer(
         session_id=session_id,
         sample_sha256=sample_sha256,
-        findings=[],
+        findings=technique_matches,
         platform=platform,
     )
 
